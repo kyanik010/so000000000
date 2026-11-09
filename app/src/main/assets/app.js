@@ -314,6 +314,22 @@
         }, true);
         document.getElementById('btn-toggle-subtitles').addEventListener('click', () => this.toggleSubtitles());
         document.getElementById('btn-quality').addEventListener('click', () => this.toggleQualityMenu());
+        document.getElementById('btn-video-size').addEventListener('click', () => this.toggleVideoSizeMenu());
+        document.querySelectorAll('.player-size-option').forEach(option => option.addEventListener('click', () => {
+          const mode = Number(option.dataset.resizeMode);
+          if (window.NativePlayback && window.NativePlayback.setVideoResizeMode) {
+            window.NativePlayback.setVideoResizeMode(mode);
+            document.querySelectorAll('.player-size-option').forEach(el =>
+              el.setAttribute('aria-pressed', String(el === option)));
+            document.getElementById('video-size-label').textContent = option.textContent.trim();
+            document.getElementById('player-size-menu').classList.remove('open');
+            document.getElementById('btn-video-size').setAttribute('aria-expanded', 'false');
+            try {
+              sonixSettings.videoResizeMode = mode;
+              saveSonixSettings();
+            } catch (_) {}
+          }
+        }));
         document.querySelectorAll('.player-quality-option').forEach(option => option.addEventListener('click', () => {
           const quality=Number(option.dataset.quality);
           if (window.NativePlayback && window.NativePlayback.setVideoQuality) {
@@ -383,6 +399,10 @@
           if (menu) menu.classList.remove('open');
           const qualityButton = document.getElementById('btn-quality');
           if (qualityButton) qualityButton.setAttribute('aria-expanded', 'false');
+          const sizeMenu = document.getElementById('player-size-menu');
+          if (sizeMenu) sizeMenu.classList.remove('open');
+          const sizeButton = document.getElementById('btn-video-size');
+          if (sizeButton) sizeButton.setAttribute('aria-expanded', 'false');
         }
         if (this.viewport) this.viewport.classList.remove('playback-controls-visible');
         if (this.controlsHideTimer) clearTimeout(this.controlsHideTimer);
@@ -607,6 +627,20 @@
         const open=!menu.classList.contains('open');
         menu.classList.toggle('open',open);
         button.setAttribute('aria-expanded',String(open));
+      }
+
+      toggleVideoSizeMenu() {
+        const menu = document.getElementById('player-size-menu');
+        const button = document.getElementById('btn-video-size');
+        if (!menu || !button) return;
+        const open = !menu.classList.contains('open');
+        menu.classList.toggle('open', open);
+        button.setAttribute('aria-expanded', String(open));
+        const qualityMenu = document.getElementById('player-quality-menu');
+        if (open && qualityMenu) {
+          qualityMenu.classList.remove('open');
+          document.getElementById('btn-quality').setAttribute('aria-expanded', 'false');
+        }
       }
 
       pause() {
