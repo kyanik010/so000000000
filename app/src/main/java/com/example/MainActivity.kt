@@ -228,6 +228,7 @@ class MainActivity : ComponentActivity() {
     private var sonixBackgroundDrawable: SonixBackgroundDrawable? = null
     private var nativePlayer: ExoPlayer? = null
     private var nativePlayerView: PlayerView? = null
+    @Volatile private var nativeVideoResizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
     private var nativeVideoStreamType: String? = null
     private var nativeVideoStreamId: String? = null
     private val playbackRecoveryHandler = Handler(Looper.getMainLooper())
@@ -644,7 +645,7 @@ class MainActivity : ComponentActivity() {
                 ).also { nativePlayerView = it }
             playerView.apply {
                 setUseController(false)
-                setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
+                setResizeMode(nativeVideoResizeMode)
                 setKeepContentOnPlayerReset(true)
                 setShutterBackgroundColor(Color.TRANSPARENT)
                 setBackgroundColor(Color.TRANSPARENT)
@@ -956,6 +957,22 @@ class MainActivity : ComponentActivity() {
                 }
                 player.seekTo(target)
                 syncExternalAudioAfterVideoSeek(target)
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun setVideoResizeMode(mode: Int) {
+            runOnUiThread {
+                val resizeMode = when (mode) {
+                    1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                    3 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                    4 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT
+                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                }
+                nativeVideoResizeMode = resizeMode
+                nativePlayerView?.setResizeMode(resizeMode)
+                android.util.Log.i("SONIXPlayback", "setVideoResizeMode: mode=$mode resizeMode=$resizeMode")
             }
         }
 
