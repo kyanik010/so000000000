@@ -397,6 +397,19 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="M7 10h4m-4 4h3m4-4h3m-3 4h3"/></svg>
               <span id="subtitle-label">ترجمة</span>
             </button>
+            <div class="player-size-control">
+              <button id="btn-video-size" class="playback-control-btn focusable" title="حجم الصورة" aria-expanded="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 8h8v8H8z"/></svg>
+                <span id="video-size-label">الحجم</span>
+              </button>
+              <div class="player-size-menu" id="player-size-menu">
+                <button class="player-size-option focusable" data-resize-mode="0" aria-pressed="true">تلقائي</button>
+                <button class="player-size-option focusable" data-resize-mode="1" aria-pressed="false">ملء الشاشة (قص الأطراف)</button>
+                <button class="player-size-option focusable" data-resize-mode="2" aria-pressed="false">تمديد الصورة</button>
+                <button class="player-size-option focusable" data-resize-mode="3" aria-pressed="false">تثبيت العرض</button>
+                <button class="player-size-option focusable" data-resize-mode="4" aria-pressed="false">تثبيت الارتفاع</button>
+              </div>
+            </div>
             <div class="player-quality-control">
               <button id="btn-quality" class="playback-control-btn focusable" title="الجودة" aria-expanded="false">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="10" cy="18" r="2" fill="currentColor"/></svg>
