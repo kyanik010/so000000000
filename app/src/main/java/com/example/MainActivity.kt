@@ -76,6 +76,8 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.ViewCompat
+import com.example.performance.AdaptivePerformanceEngine
+import com.example.performance.PerformanceBridge
 
 internal data class TimedSubtitleCue(val startMs: Long, val endMs: Long, val text: String)
 
@@ -411,12 +413,17 @@ class MainActivity : ComponentActivity() {
     private var nativeVideoMuted = false
     private lateinit var xtreamBridge: XtreamBridge
     private lateinit var sonixControlClient: SonixControlClient
+    private lateinit var performanceEngine: AdaptivePerformanceEngine
     @Volatile private var sonixControlPageReady = false
     @Volatile private var webTextInputFocused = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialize Adaptive Performance Engine
+        performanceEngine = AdaptivePerformanceEngine(this)
+        registerComponentCallbacks(performanceEngine)
 
         // Keep screen awake during playback
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -502,6 +509,16 @@ class MainActivity : ComponentActivity() {
                 addJavascriptInterface(xtreamBridge, "XtreamBridge")
                 addJavascriptInterface(SonixControlBridge(), "SonixControlBridge")
                 addJavascriptInterface(NativePlaybackBridge(), "NativePlayback")
+                addJavascriptInterface(PerformanceBridge(performanceEngine), "SonixPerformance")
+            }
+
+            performanceEngine.addTierChangeListener { newTier, _ ->
+                runOnUiThread {
+                    webView?.evaluateJavascript(
+                        "window.SonixPerformanceUI && window.SonixPerformanceUI.applyTier('${newTier.tierName}');",
+                        null
+                    )
+                }
             }
 
             sonixControlClient.onSync = { result ->
@@ -2382,6 +2399,9 @@ class MainActivity : ComponentActivity() {
         applyVideoFullscreenSystemUi()
         detachExternalAudioInternal(false)
         stopNativePlayer()
+        if (::performanceEngine.isInitialized) {
+            unregisterComponentCallbacks(performanceEngine)
+        }
         if (::sonixControlClient.isInitialized) sonixControlClient.shutdown()
         if (::xtreamBridge.isInitialized) xtreamBridge.shutdown()
         subtitleIoExecutor.shutdownNow()

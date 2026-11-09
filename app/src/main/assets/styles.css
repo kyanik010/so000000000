@@ -4497,3 +4497,103 @@ body:has(#view-live.active) > .ambient-waves {
     font-size: .68rem;
   }
 }
+
+
+/* ==========================================================================
+   SONIX ADAPTIVE PERFORMANCE ENGINE - TIER RULES
+   ========================================================================== */
+
+/* 1. PERFORMANCE TIER (Low-End Hardware / Android TV Sticks) */
+html.perf-tier-performance * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.perf-tier-performance .modal-backdrop {
+  background: rgba(10, 15, 29, 0.96) !important;
+}
+
+html.perf-tier-performance .modal-window,
+html.perf-tier-performance .top-toolbar,
+html.perf-tier-performance .sidebar,
+html.perf-tier-performance .player-panel,
+html.perf-tier-performance .dropdown-menu {
+  background: #0f172a !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+}
+
+html.perf-tier-performance .content-card,
+html.perf-tier-performance .channel-item,
+html.perf-tier-performance .vod-card {
+  box-shadow: none !important;
+  transition: border-color 0.1s ease, background-color 0.1s ease !important;
+  transform: none !important;
+}
+
+html.perf-tier-performance .focusable:focus,
+html.perf-tier-performance .channel-item.focused,
+html.perf-tier-performance .vod-card.focused {
+  outline: 2px solid #38bdf8 !important;
+  outline-offset: 2px !important;
+  transform: none !important;
+  box-shadow: 0 0 0 2px #0284c7 !important;
+}
+
+/* 2. BALANCED TIER (Standard Mid-Tier Hardware) */
+html.perf-tier-balanced .modal-window,
+html.perf-tier-balanced .top-toolbar,
+html.perf-tier-balanced .sidebar {
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5) !important;
+}
+
+html.perf-tier-balanced .content-card,
+html.perf-tier-balanced .channel-item,
+html.perf-tier-balanced .vod-card {
+  transition: transform 0.18s ease, border-color 0.18s ease !important;
+}
+
+html.perf-tier-balanced .focusable:focus,
+html.perf-tier-balanced .channel-item.focused,
+html.perf-tier-balanced .vod-card.focused {
+  outline: 2px solid #38bdf8 !important;
+  transform: scale(1.02) !important;
+}
+
+/* 3. PREMIUM TIER (Cinematic Full Effects / High-End Devices) */
+html.perf-tier-premium .modal-window,
+html.perf-tier-premium .top-toolbar,
+html.perf-tier-premium .sidebar {
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 25px rgba(56, 189, 248, 0.15) !important;
+}
+
+html.perf-tier-premium .focusable:focus,
+html.perf-tier-premium .channel-item.focused,
+html.perf-tier-premium .vod-card.focused {
+  outline: 2px solid #38bdf8 !important;
+  outline-offset: 3px !important;
+  transform: scale(1.04) !important;
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.5) !important;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease !important;
+}
+
+/* 4. POSTER LAZY LOADING AND PLACEHOLDER RULES */
+img[data-lazy-src] {
+  opacity: 0;
+  transition: opacity 0.25s ease-in;
+}
+
+img.loaded {
+  opacity: 1;
+}
+
+.poster-placeholder {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

@@ -686,6 +686,22 @@
           </section>
 
           <section class="settings-section">
+            <div class="settings-section-heading">وضع الأداء (Adaptive Performance Engine)</div>
+            <label class="settings-row" for="settings-performance-mode">
+              <span><strong>وضع الأداء والرسوميات</strong><small id="settings-perf-status-desc">تلقائي ذكي (Smart) - يتكيف تلقائياً مع قدرات الجهاز</small></span>
+              <select id="settings-performance-mode" class="settings-select focusable">
+                <option value="smart">⚡ تلقائي ذكي (Smart - الافتراضي)</option>
+                <option value="performance">🚀 أداء عالي (Performance - للأجهزة الضعيفة)</option>
+                <option value="balanced">⚖️ متوازن (Balanced - توازن وسرعة)</option>
+                <option value="premium">🎬 سينمائي كامل (Premium - للأجهزة القوية)</option>
+              </select>
+            </label>
+            <div id="perf-device-badge" class="settings-note" style="margin-top:6px; color:var(--text-dim, #94a3b8); font-size:12px;">
+              المستوى النشط حالياً: <span id="perf-active-tier-label" style="color:#38bdf8; font-weight:bold;">جاري التحقق...</span>
+            </div>
+          </section>
+
+          <section class="settings-section">
             <div class="settings-section-heading">الإضافات والترجمة</div>
             <div class="settings-row">
               <span><strong>Addons</strong><small>تصفح الإضافات الرسمية والمجتمعية وثبّتها وأدرها</small></span>
@@ -965,6 +981,7 @@
        JAVASCRIPT ARCHITECTURE
        ========================================================================== -->
   <script src="app.js"></script>
+  <script src="sonix-performance.js"></script>
   <script src="addons-subtitles.js"></script>
 </body>
 </html>
