@@ -39,6 +39,7 @@ import androidx.media3.ui.PlayerView
 import androidx.media3.ui.CaptionStyleCompat
 import android.widget.FrameLayout
 import androidx.media3.common.C
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.text.Cue
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -265,6 +266,15 @@ class MainActivity : ComponentActivity() {
     private var rootContainer: FrameLayout? = null
     private var sonixBackgroundDrawable: SonixBackgroundDrawable? = null
     private var nativePlayer: ExoPlayer? = null
+    // The primary video player is the sole owner of Android audio focus.
+    // The independent external-audio player shares media attributes but must not
+    // request/release focus, otherwise it can interrupt the video player itself.
+    private val sonixMediaAudioAttributes: AudioAttributes by lazy {
+        AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+    }
     private var nativePlayerView: PlayerView? = null
     @Volatile private var nativeVideoResizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
     private var nativeVideoStreamType: String? = null
@@ -676,6 +686,7 @@ class MainActivity : ComponentActivity() {
                     .setInitialBitrateEstimate(8_000_000L)
                     .build()
                 ExoPlayer.Builder(this@MainActivity)
+                    .setAudioAttributes(sonixMediaAudioAttributes, /* handleAudioFocus= */ true)
                     .setLoadControl(dynamicLoadControl)
                     .setBandwidthMeter(bandwidthMeter)
                     .setMediaSourceFactory(mediaSourceFactory)
@@ -1439,6 +1450,9 @@ class MainActivity : ComponentActivity() {
             .setReadTimeoutMs(30000)
         val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
         val audioPlayer = ExoPlayer.Builder(this)
+            // Do not request audio focus from the second player. The video player
+            // owns focus for the combined SONIX playback session.
+            .setAudioAttributes(sonixMediaAudioAttributes, /* handleAudioFocus= */ false)
             .setLoadControl(loadControl)
             .setMediaSourceFactory(mediaSourceFactory)
             .build().apply {
