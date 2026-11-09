@@ -357,7 +357,6 @@ class MainActivity : ComponentActivity() {
     @Volatile private var externalAudioActive = false
     private var externalAudioSyncOffsetMs = 0L
     private var externalAudioSyncRunnable: Runnable? = null
-    private var externalAudioPausedForVideoBuffering = false
     private var externalAudioVolume = 1f
     private var nativeVideoVolumeBeforeExternalAudio = 1f
     private var nativeVideoMuted = false
@@ -609,7 +608,7 @@ class MainActivity : ComponentActivity() {
                 val sharedAllocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
                 val liveLoadControl = DefaultLoadControl.Builder()
                     .setAllocator(sharedAllocator)
-                    .setBufferDurationsMs(15000, 50000, 2500, 5000)
+                    .setBufferDurationsMs(40000, 40000, 0, 0)
                     .setPrioritizeTimeOverSizeThresholds(true)
                     .build()
                 val vodLoadControl = DefaultLoadControl.Builder()
@@ -682,11 +681,11 @@ class MainActivity : ComponentActivity() {
 
             val isLive = streamType == "live"
             val profileName = if (isLive) "LIVE" else "VOD"
-            val minBuf = if (isLive) 15000 else 30000
-            val maxBuf = if (isLive) 50000 else 60000
+            val minBuf = if (isLive) 40000 else 30000
+            val maxBuf = if (isLive) 40000 else 60000
             android.util.Log.i(
                 "SONIXPlayback",
-                "PLAYBACK_PROFILE profile=$profileName minBuffer=${minBuf}ms maxBuffer=${maxBuf}ms playBuffer=2500ms rebuffer=5000ms prioritizeTimeOverSize=true initialBitrateEstimate=8Mbps"
+                "PLAYBACK_PROFILE profile=$profileName minBuffer=${minBuf}ms maxBuffer=${maxBuf}ms playBuffer=${if (isLive) 0 else 2500}ms rebuffer=${if (isLive) 0 else 5000}ms prioritizeTimeOverSize=true initialBitrateEstimate=8Mbps"
             )
 
             // Use an explicit physical LEFT gravity: START would resolve to RIGHT in RTL
@@ -743,7 +742,6 @@ class MainActivity : ComponentActivity() {
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     when (playbackState) {
                         Player.STATE_BUFFERING -> {
-                            setExternalAudioVideoBuffering(true)
                             if (bufferingStartedAtMs == 0L) {
                                 bufferingStartedAtMs = SystemClock.elapsedRealtime()
                                 android.util.Log.i("SONIXPlayback", "BUFFERING_START streamType=" + (nativeVideoStreamType ?: "url") + " streamId=" + nativeVideoStreamId)
@@ -773,7 +771,6 @@ class MainActivity : ComponentActivity() {
                                 android.util.Log.i("SONIXPlayback", "FIRST_READY elapsed=" + (now - playbackRequestStartedAtMs) + "ms streamType=" + (nativeVideoStreamType ?: "url"))
                             }
                             bufferingStartedAtMs = 0L
-                            setExternalAudioVideoBuffering(false)
                             hasPlaybackReachedReady = true
                             liveRecoveryAttempts = 0
                             liveRecoveryRunnable?.let(playbackRecoveryHandler::removeCallbacks)
@@ -1357,7 +1354,7 @@ class MainActivity : ComponentActivity() {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(5000, 30000, 1500, 5000)
+            .setBufferDurationsMs(20000, 40000, 0, 0)
             .build()
         // Use the same IPTV HTTP identity and redirect handling as the primary
         // video player. Some providers reject ExoPlayer's default User-Agent.
@@ -1547,23 +1544,13 @@ class MainActivity : ComponentActivity() {
         audio.setPlaybackParameters(audio.playbackParameters.withSpeed(speed))
     }
 
-    private fun setExternalAudioVideoBuffering(buffering: Boolean) {
-        if (!externalAudioActive) return
-        if (buffering) {
-            externalAudioPausedForVideoBuffering = true
-            secondaryAudioPlayer?.pause()
-        } else {
-            externalAudioPausedForVideoBuffering = false
-            syncExternalAudioPlaybackState()
-        }
-    }
-
     private fun syncExternalAudioPlaybackState() {
         if (!externalAudioActive) return
         val video = nativePlayer
         val audio = secondaryAudioPlayer ?: return
-        if (externalAudioPausedForVideoBuffering || video == null ||
-            !video.playWhenReady || video.playbackState != Player.STATE_READY) {
+        // Keep the independent audio stream running while video is buffering.
+        // Only follow explicit video play/pause intent; STATE_BUFFERING is not a pause request.
+        if (video == null || !video.playWhenReady) {
             audio.pause()
         } else {
             audio.play()
@@ -1578,7 +1565,6 @@ class MainActivity : ComponentActivity() {
         externalAudioSourceUrl = ""
         val wasActive = externalAudioActive
         externalAudioActive = false
-        externalAudioPausedForVideoBuffering = false
         externalAudioSyncOffsetMs = 0L
         stopExternalAudioSyncMonitor()
         releaseSecondaryAudio()
