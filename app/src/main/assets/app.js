@@ -484,6 +484,15 @@
             window.NativePlayback.play(streamUrl, rect.left, rect.top, rect.width, rect.height, pixelRatio, cornerRadius);
           }
           if (window.NativePlayback.setVideoQuality) window.NativePlayback.setVideoQuality(Number(sonixSettings.quality));
+          if (window.NativePlayback.setVideoResizeMode) {
+            const resizeMode = Number(sonixSettings.videoResizeMode || 0);
+            window.NativePlayback.setVideoResizeMode(resizeMode);
+            document.querySelectorAll('.player-size-option').forEach(option =>
+              option.setAttribute('aria-pressed', String(Number(option.dataset.resizeMode) === resizeMode)));
+            const selectedSize = document.querySelector('.player-size-option[aria-pressed="true"]');
+            const sizeLabel = document.getElementById('video-size-label');
+            if (selectedSize && sizeLabel) sizeLabel.textContent = selectedSize.textContent.trim();
+          }
           if (window.NativePlayback.setSubtitlesEnabled) window.NativePlayback.setSubtitlesEnabled(Boolean(sonixSettings.subtitles));
         };
         requestAnimationFrame(() => requestAnimationFrame(() => {
