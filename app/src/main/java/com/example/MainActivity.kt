@@ -78,6 +78,44 @@ import androidx.core.view.ViewCompat
 
 internal data class TimedSubtitleCue(val startMs: Long, val endMs: Long, val text: String)
 
+/**
+ * Stability-oriented Media3 buffering profiles.
+ * Startup thresholds avoid immediate play on a nearly empty buffer; rebuffer
+ * thresholds give the stream time to refill before playback resumes.
+ */
+internal data class SonixPlaybackBufferProfile(
+    val minBufferMs: Int,
+    val maxBufferMs: Int,
+    val bufferForPlaybackMs: Int,
+    val bufferForPlaybackAfterRebufferMs: Int
+)
+
+internal object SonixPlaybackBufferProfiles {
+    // Live streams: moderate latency with enough reserve for short network jitter.
+    val LIVE = SonixPlaybackBufferProfile(
+        minBufferMs = 15_000,
+        maxBufferMs = 45_000,
+        bufferForPlaybackMs = 3_000,
+        bufferForPlaybackAfterRebufferMs = 10_000
+    )
+
+    // VOD: deeper reserve is affordable because there is no live-edge constraint.
+    val VOD = SonixPlaybackBufferProfile(
+        minBufferMs = 45_000,
+        maxBufferMs = 120_000,
+        bufferForPlaybackMs = 5_000,
+        bufferForPlaybackAfterRebufferMs = 12_000
+    )
+
+    // External audio stays lighter than VOD so it can rejoin video promptly.
+    val EXTERNAL_AUDIO = SonixPlaybackBufferProfile(
+        minBufferMs = 10_000,
+        maxBufferMs = 30_000,
+        bufferForPlaybackMs = 2_000,
+        bufferForPlaybackAfterRebufferMs = 6_000
+    )
+}
+
 @OptIn(UnstableApi::class)
 internal class DynamicLoadControl(
     private val liveLoadControl: LoadControl,
@@ -607,15 +645,27 @@ class MainActivity : ComponentActivity() {
                 val mediaSourceFactory = DefaultMediaSourceFactory(this@MainActivity)
                     .setDataSourceFactory(dataSourceFactory)
                 val sharedAllocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
+                val liveProfile = SonixPlaybackBufferProfiles.LIVE
                 val liveLoadControl = DefaultLoadControl.Builder()
                     .setAllocator(sharedAllocator)
-                    .setBufferDurationsMs(40000, 40000, 0, 0)
-                    .setPrioritizeTimeOverSizeThresholds(true)
+                    .setBufferDurationsMs(
+                        liveProfile.minBufferMs,
+                        liveProfile.maxBufferMs,
+                        liveProfile.bufferForPlaybackMs,
+                        liveProfile.bufferForPlaybackAfterRebufferMs
+                    )
+                    .setPrioritizeTimeOverSizeThresholds(false)
                     .build()
+                val vodProfile = SonixPlaybackBufferProfiles.VOD
                 val vodLoadControl = DefaultLoadControl.Builder()
                     .setAllocator(sharedAllocator)
-                    .setBufferDurationsMs(30000, 60000, 2500, 5000)
-                    .setPrioritizeTimeOverSizeThresholds(true)
+                    .setBufferDurationsMs(
+                        vodProfile.minBufferMs,
+                        vodProfile.maxBufferMs,
+                        vodProfile.bufferForPlaybackMs,
+                        vodProfile.bufferForPlaybackAfterRebufferMs
+                    )
+                    .setPrioritizeTimeOverSizeThresholds(false)
                     .build()
                 val dynamicLoadControl = DynamicLoadControl(
                     liveLoadControl = liveLoadControl,
@@ -1370,8 +1420,15 @@ class MainActivity : ComponentActivity() {
     private fun startExternalAudioAttempt(generation: Long) {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
+        val audioBufferProfile = SonixPlaybackBufferProfiles.EXTERNAL_AUDIO
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(20000, 40000, 0, 0)
+            .setBufferDurationsMs(
+                audioBufferProfile.minBufferMs,
+                audioBufferProfile.maxBufferMs,
+                audioBufferProfile.bufferForPlaybackMs,
+                audioBufferProfile.bufferForPlaybackAfterRebufferMs
+            )
+            .setPrioritizeTimeOverSizeThresholds(false)
             .build()
         // Use the same IPTV HTTP identity and redirect handling as the primary
         // video player. Some providers reject ExoPlayer's default User-Agent.

@@ -13,18 +13,57 @@ import org.junit.Test
 class PlaybackAndSubtitleFixesTest {
 
     @Test
+    fun playbackBufferProfilesUseStableStartupAndRebufferThresholds() {
+        val live = SonixPlaybackBufferProfiles.LIVE
+        assertEquals(15_000, live.minBufferMs)
+        assertEquals(45_000, live.maxBufferMs)
+        assertEquals(3_000, live.bufferForPlaybackMs)
+        assertEquals(10_000, live.bufferForPlaybackAfterRebufferMs)
+
+        val vod = SonixPlaybackBufferProfiles.VOD
+        assertEquals(45_000, vod.minBufferMs)
+        assertEquals(120_000, vod.maxBufferMs)
+        assertEquals(5_000, vod.bufferForPlaybackMs)
+        assertEquals(12_000, vod.bufferForPlaybackAfterRebufferMs)
+
+        val externalAudio = SonixPlaybackBufferProfiles.EXTERNAL_AUDIO
+        assertEquals(10_000, externalAudio.minBufferMs)
+        assertEquals(30_000, externalAudio.maxBufferMs)
+        assertEquals(2_000, externalAudio.bufferForPlaybackMs)
+        assertEquals(6_000, externalAudio.bufferForPlaybackAfterRebufferMs)
+
+        listOf(live, vod, externalAudio).forEach { profile ->
+            assertTrue(profile.minBufferMs <= profile.maxBufferMs)
+            assertTrue(profile.bufferForPlaybackMs <= profile.minBufferMs)
+            assertTrue(profile.bufferForPlaybackAfterRebufferMs <= profile.maxBufferMs)
+        }
+    }
+
+    @Test
     fun dynamicLoadControlDelegatesToLiveAndVodCorrectly() {
         var isLive = true
         val allocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
+        val liveProfile = SonixPlaybackBufferProfiles.LIVE
         val liveControl = DefaultLoadControl.Builder()
             .setAllocator(allocator)
-            .setBufferDurationsMs(15000, 50000, 2500, 5000)
-            .setPrioritizeTimeOverSizeThresholds(true)
+            .setBufferDurationsMs(
+                liveProfile.minBufferMs,
+                liveProfile.maxBufferMs,
+                liveProfile.bufferForPlaybackMs,
+                liveProfile.bufferForPlaybackAfterRebufferMs
+            )
+            .setPrioritizeTimeOverSizeThresholds(false)
             .build()
+        val vodProfile = SonixPlaybackBufferProfiles.VOD
         val vodControl = DefaultLoadControl.Builder()
             .setAllocator(allocator)
-            .setBufferDurationsMs(30000, 60000, 2500, 5000)
-            .setPrioritizeTimeOverSizeThresholds(true)
+            .setBufferDurationsMs(
+                vodProfile.minBufferMs,
+                vodProfile.maxBufferMs,
+                vodProfile.bufferForPlaybackMs,
+                vodProfile.bufferForPlaybackAfterRebufferMs
+            )
+            .setPrioritizeTimeOverSizeThresholds(false)
             .build()
 
         val dynamicControl = DynamicLoadControl(
