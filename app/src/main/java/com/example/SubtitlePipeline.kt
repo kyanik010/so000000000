@@ -277,7 +277,12 @@ internal object SubtitlePipeline {
                 entriesCount++
                 require(entriesCount <= maxEntries) { "أرشيف ZIP يحتوي على عدد كبير من الملفات" }
                 val rawName = entry.name.replace('\\', '/')
-                require(!rawName.contains("../") && !rawName.startsWith("/")) {
+                val pathSegments = rawName.split('/')
+                require(
+                    !rawName.startsWith("/") &&
+                    !rawName.matches(Regex("^[A-Za-z]:.*")) &&
+                    pathSegments.none { it == ".." }
+                ) {
                     "أرشيف ZIP يحتوي على مسار غير آمن"
                 }
                 if (entry.isDirectory) continue

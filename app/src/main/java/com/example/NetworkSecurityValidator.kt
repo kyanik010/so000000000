@@ -48,14 +48,16 @@ internal object NetworkSecurityValidator {
 
         // 2. If host is an IP or resolves to loopback / link-local metadata
         try {
-            val address = InetAddress.getByName(host)
-            if (isBlockedAddress(address)) {
+            // Reject the URL if ANY resolved address is unsafe.
+            val addresses = InetAddress.getAllByName(host)
+            require(addresses.isNotEmpty()) { "تعذر تحديد عنوان الخادم" }
+            addresses.firstOrNull { isBlockedAddress(it) }?.let { address ->
                 throw SecurityException("تم حظر الاتصال بالعنوان: ${address.hostAddress}")
             }
         } catch (e: SecurityException) {
             throw e
         } catch (_: Exception) {
-            // DNS resolution failures will be caught at connection time
+            // Preserve compatibility with IPTV hostnames that resolve only at connect time.
         }
     }
 
@@ -67,7 +69,7 @@ internal object NetworkSecurityValidator {
      * are NOT blocked to allow local IPTV box servers.
      */
     fun isBlockedAddress(address: InetAddress): Boolean {
-        if (address.isLoopbackAddress || address.isAnyLocalAddress) return true
+        if (address.isLoopbackAddress || address.isAnyLocalAddress || address.isLinkLocalAddress || address.isMulticastAddress) return true
 
         val bytes = address.address
         if (bytes.size == 4) {
@@ -82,6 +84,9 @@ internal object NetworkSecurityValidator {
 
             // 0.0.0.0/8 current network
             if (b0 == 0) return true
+
+            // IPv4 multicast and limited broadcast are not valid IPTV destinations.
+            if (b0 in 224..239 || (b0 == 255 && b1 == 255)) return true
         }
 
         return false

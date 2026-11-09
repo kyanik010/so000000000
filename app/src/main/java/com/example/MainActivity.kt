@@ -417,7 +417,7 @@ class MainActivity : ComponentActivity() {
                             try {
                                 startActivity(Intent(Intent.ACTION_VIEW, url))
                             } catch (e: Exception) {
-                                android.util.Log.w("SONIX", "Cannot launch external browser for $url", e)
+                                android.util.Log.w("SONIX", "Cannot launch external browser for ${CredentialSanitizer.sanitizeUrl(urlStr)}")
                             }
                         }
                         return true
@@ -442,7 +442,7 @@ class MainActivity : ComponentActivity() {
                 webChromeClient = object : WebChromeClient() {
                     override fun onPermissionRequest(request: PermissionRequest?) {
                         val origin = request?.origin?.toString().orEmpty()
-                        if (origin.startsWith("file://") || origin.isEmpty()) {
+                        if (origin == "file://") {
                             request?.grant(request.resources)
                         } else {
                             request?.deny()
@@ -811,7 +811,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     val detail = CredentialSanitizer.sanitizeMessage(rawDetail)
-                    android.util.Log.e("SONIXPlayback", "Playback failed: " + error.errorCodeName, error)
+                    android.util.Log.e("SONIXPlayback", "Playback failed: " + error.errorCodeName + " — " + detail)
                     if (nativeVideoStreamType == "live") {
                         val isBehindLive = error.cause is BehindLiveWindowException
                         val httpResponseCode = (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
@@ -1486,7 +1486,7 @@ class MainActivity : ComponentActivity() {
             )
             audio.seekTo(target)
         } catch (e: Exception) {
-            android.util.Log.w("SONIXExternalAudio", "Offset application failed", e)
+            android.util.Log.w("SONIXExternalAudio", "Offset application failed: " + CredentialSanitizer.sanitizeMessage(e.message ?: "unknown error"))
         }
     }
 
