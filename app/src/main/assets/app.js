@@ -1506,7 +1506,7 @@
 
       handleEnterAction() {
         if (this.currentFocusedElement &&
-            this.currentFocusedElement.matches('.channel-row.selected') &&
+            this.currentFocusedElement.matches('.channel-row.selected, .episode-card') &&
             videoPlaybackController && videoPlaybackController.currentItem &&
             !videoPlaybackController.isFullscreen &&
             window.NativePlayback && window.NativePlayback.isActive()) {
