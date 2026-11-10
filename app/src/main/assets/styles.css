@@ -379,6 +379,20 @@
       box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
       white-space: nowrap;
     }
+    .home-whatsapp-contact {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+    .home-whatsapp-separator {
+      color: var(--text-muted);
+      font-size: clamp(0.78rem, 1vw, 0.92rem);
+      font-weight: 800;
+      line-height: 1;
+      flex: 0 0 auto;
+    }
     .home-whatsapp-icon {
       width: clamp(18px, 1.7vw, 23px);
       height: clamp(18px, 1.7vw, 23px);
