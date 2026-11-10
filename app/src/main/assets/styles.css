@@ -2627,7 +2627,7 @@
     .tv-quick-btn:focus,.tv-quick-btn.keyboard-focused{background:var(--selected-item-bg) !important;border-color:var(--focus-blue) !important;box-shadow:0 0 0 2px var(--focus-blue) !important}
     .sonix-login-card button{min-height:38px;border:0;border-radius:8px;background:var(--accent-gold);color:#0A0F14;font:inherit;font-weight:900}
     #sonix-login-message{min-height:16px;color:var(--danger-red);font-size:.78rem;text-align:center}
-    .provider-logo{width:30px;height:30px;object-fit:contain;border-radius:5px}
+    .provider-logo{width:30px;height:30px;object-fit:contain;border-radius:5px;background:#fff;padding:2px;box-sizing:border-box}
   
     /* SONIX series browser: select a season, then browse clear episode cards. */
     #series-episodes-modal { padding:clamp(10px,2.5vw,28px); }
