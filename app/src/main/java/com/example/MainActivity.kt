@@ -45,6 +45,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.Format
@@ -382,6 +383,10 @@ class MainActivity : ComponentActivity() {
     private var externalAudioRetryAttempt = 0
     private var externalAudioGeneration = 0L
     private var externalAudioSourceUrl = ""
+    private var externalAudioStreamId = ""
+    private var externalAudioExtension = "ts"
+    private var externalAudioUsingExtractorFallback = false
+    private var nativeTrackSelectionBeforeExternalAudio: TrackSelectionParameters? = null
     @Volatile private var externalAudioActive = false
     private var externalAudioSyncOffsetMs = 0L
     private var externalAudioVolume = 1f
@@ -1220,29 +1225,25 @@ class MainActivity : ComponentActivity() {
                     require(!(nativeVideoStreamType == "live" && nativeVideoStreamId == normalizedStreamId)) {
                         "اختر قناة صوتية مختلفة عن قناة الفيديو"
                     }
-                    val addonManager = com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
-                    addonManager.startIndependentAudio(normalizedStreamId, extension) { state, message, errCode, readyUrl ->
-                        runOnUiThread {
-                            val payload = JSONObject()
-                                .put("state", state.code)
-                                .put("message", message)
-                                .put("errorCode", errCode?.code ?: "")
-                                .toString()
-                            webView?.evaluateJavascript("window.onAudioAddonStateChanged && window.onAudioAddonStateChanged($payload)", null)
-
-                            if (state == com.example.audio.AudioExtractionState.RESOURCE_READY && !readyUrl.isNullOrBlank()) {
-                                attachExternalAudioInternal(readyUrl, compareWithVideo = false)
-                            } else if (state.name.startsWith("FAILED")) {
-                                detachExternalAudioInternal(false)
-                                val errText = if (errCode != null) "$message (${errCode.code})" else message
-                                val jsonMsg = JSONObject.quote(errText)
-                                webView?.evaluateJavascript("window.onExternalAudioError && window.onExternalAudioError($jsonMsg)", null)
-                            }
-                        }
+                    val normalizedExtension = extension.trim().lowercase(Locale.ROOT).removePrefix(".")
+                    require(normalizedExtension.matches(Regex("[a-z0-9]{1,8}"))) {
+                        "امتداد البث الصوتي غير صالح"
                     }
+
+                    // Stop only a previous extraction fallback. The video player is never reset here.
+                    try {
+                        com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
+                            .stopIndependentAudio()
+                    } catch (_: Exception) {}
+
+                    externalAudioStreamId = normalizedStreamId
+                    externalAudioExtension = normalizedExtension
+                    externalAudioUsingExtractorFallback = false
+                    val sourceUri = xtreamBridge.buildPlaybackUri("live", normalizedStreamId, normalizedExtension)
+                    attachExternalAudioInternal(sourceUri.toString(), compareWithVideo = false)
                 } catch (error: Exception) {
                     detachExternalAudioInternal(false)
-                    val message = JSONObject.quote(error.message ?: "تعذر استخراج رابط القناة الصوتية من الاشتراك")
+                    val message = JSONObject.quote(error.message ?: "تعذر إنشاء رابط القناة الصوتية")
                     webView?.evaluateJavascript("window.onExternalAudioError && window.onExternalAudioError($message)", null)
                 }
             }
@@ -1384,12 +1385,17 @@ class MainActivity : ComponentActivity() {
                         externalAudioRetryAttempt = 0
                         applyExternalAudioSyncOffset()
 
-                        // Mute original video only when secondary audio is confirmed STATE_READY
-                        if (!nativeVideoMuted) {
-                            nativePlayer?.let { primary ->
-                                nativeVideoVolumeBeforeExternalAudio = primary.volume
-                                primary.volume = 0f
+                        // Save the user's original track policy once (OFF -> ON), then
+                        // disable audio decoding on video A while keeping its video renderer alive.
+                        nativePlayer?.let { primary ->
+                            if (nativeTrackSelectionBeforeExternalAudio == null) {
+                                nativeTrackSelectionBeforeExternalAudio = primary.trackSelectionParameters
+                                if (!nativeVideoMuted) nativeVideoVolumeBeforeExternalAudio = primary.volume
                             }
+                            primary.trackSelectionParameters = primary.trackSelectionParameters.buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                                .build()
+                            if (!nativeVideoMuted) primary.volume = 0f
                         }
 
                         webView?.evaluateJavascript(
@@ -1402,10 +1408,7 @@ class MainActivity : ComponentActivity() {
             override fun onPlayerError(error: PlaybackException) {
                 if (generation != externalAudioGeneration || secondaryAudioPlayer !== audioPlayer) return
                 android.util.Log.w("SONIXExternalAudio", "External audio failed: ${error.errorCodeName}")
-                // Restore original video volume on secondary player error
-                if (!nativeVideoMuted) {
-                    nativePlayer?.volume = nativeVideoVolumeBeforeExternalAudio
-                }
+                // Keep A's audio disabled while B is retried; do not disturb video A.
                 scheduleExternalAudioRetry(generation)
             }
         })
@@ -1418,6 +1421,7 @@ class MainActivity : ComponentActivity() {
             val mimeType = when (extension) {
                 "m3u8" -> MimeTypes.APPLICATION_M3U8
                 "mpd" -> MimeTypes.APPLICATION_MPD
+                "ts", "mpegts" -> MimeTypes.VIDEO_MP2T
                 "aac" -> MimeTypes.AUDIO_AAC
                 "mp3" -> MimeTypes.AUDIO_MPEG
                 else -> null
@@ -1439,6 +1443,13 @@ class MainActivity : ComponentActivity() {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
         externalAudioRetryAttempt = (externalAudioRetryAttempt + 1).coerceAtMost(6)
+        if (!externalAudioUsingExtractorFallback &&
+            externalAudioStreamId.isNotBlank() &&
+            externalAudioRetryAttempt >= 2
+        ) {
+            startExternalAudioExtractionFallback(generation)
+            return
+        }
         val delayMs = externalAudioRetryDelayMs(externalAudioRetryAttempt)
         webView?.evaluateJavascript("window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
         val retry = Runnable {
@@ -1447,6 +1458,51 @@ class MainActivity : ComponentActivity() {
         }
         externalAudioRetryRunnable = retry
         externalAudioHandler.postDelayed(retry, delayMs)
+    }
+
+    private fun startExternalAudioExtractionFallback(generation: Long) {
+        if (generation != externalAudioGeneration || !externalAudioActive ||
+            externalAudioUsingExtractorFallback || externalAudioStreamId.isBlank()
+        ) return
+
+        externalAudioUsingExtractorFallback = true
+        webView?.evaluateJavascript(
+            "window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null
+        )
+        try {
+            val manager = com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
+            manager.startIndependentAudio(externalAudioStreamId, externalAudioExtension) { state, message, errCode, readyUrl ->
+                runOnUiThread {
+                    if (generation != externalAudioGeneration || !externalAudioActive) return@runOnUiThread
+                    val payload = JSONObject()
+                        .put("state", state.code)
+                        .put("message", message)
+                        .put("errorCode", errCode?.code ?: "")
+                        .toString()
+                    webView?.evaluateJavascript(
+                        "window.onAudioAddonStateChanged && window.onAudioAddonStateChanged($payload)", null
+                    )
+                    if (state == com.example.audio.AudioExtractionState.RESOURCE_READY && !readyUrl.isNullOrBlank()) {
+                        externalAudioSourceUrl = readyUrl
+                        externalAudioRetryAttempt = 0
+                        startExternalAudioAttempt(generation)
+                    } else if (state.name.startsWith("FAILED")) {
+                        val errorText = if (errCode != null) "$message (${errCode.code})" else message
+                        val jsonMessage = JSONObject.quote(errorText)
+                        detachExternalAudioInternal(false)
+                        webView?.evaluateJavascript(
+                            "window.onExternalAudioError && window.onExternalAudioError($jsonMessage)", null
+                        )
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            val jsonMessage = JSONObject.quote(error.message ?: "تعذر تشغيل مسار استخراج الصوت الاحتياطي")
+            detachExternalAudioInternal(false)
+            webView?.evaluateJavascript(
+                "window.onExternalAudioError && window.onExternalAudioError($jsonMessage)", null
+            )
+        }
     }
 
     private fun setExternalAudioSyncOffsetInternal(offsetMs: Long) {
@@ -1475,10 +1531,19 @@ class MainActivity : ComponentActivity() {
         externalAudioGeneration++
         externalAudioRetryAttempt = 0
         externalAudioSourceUrl = ""
+        externalAudioStreamId = ""
+        externalAudioExtension = "ts"
+        externalAudioUsingExtractorFallback = false
         val wasActive = externalAudioActive
         externalAudioActive = false
         releaseSecondaryAudio()
-        try { com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).stopIndependentAudio() } catch (_: Exception) {}
+        try {
+            com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).stopIndependentAudio()
+        } catch (_: Exception) {}
+        nativeTrackSelectionBeforeExternalAudio?.let { originalParameters ->
+            nativePlayer?.trackSelectionParameters = originalParameters
+        }
+        nativeTrackSelectionBeforeExternalAudio = null
         if (wasActive && !nativeVideoMuted) {
             nativePlayer?.volume = nativeVideoVolumeBeforeExternalAudio
         }
@@ -1861,6 +1926,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun resetNativePlayerForNextItem() {
+        // External audio belongs to the previous video item. Stop B before replacing A.
+        detachExternalAudioInternal(false)
         bufferingMessageRunnable?.let(bufferingMessageHandler::removeCallbacks)
         bufferingMessageRunnable = null
         playbackProgressHandler.removeCallbacks(playbackProgressRunnable)
@@ -1952,6 +2019,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopNativePlayer() {
+        detachExternalAudioInternal(false)
         bufferingMessageRunnable?.let(bufferingMessageHandler::removeCallbacks)
         bufferingMessageRunnable = null
         playbackProgressHandler.removeCallbacks(playbackProgressRunnable)
