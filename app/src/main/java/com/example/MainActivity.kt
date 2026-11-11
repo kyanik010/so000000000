@@ -39,7 +39,6 @@ import androidx.media3.ui.PlayerView
 import androidx.media3.ui.CaptionStyleCompat
 import android.widget.FrameLayout
 import androidx.media3.common.C
-import androidx.media3.common.AudioAttributes
 import androidx.media3.common.text.Cue
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -76,16 +75,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.ViewCompat
-import com.example.performance.AdaptivePerformanceEngine
-import com.example.performance.PerformanceBridge
 
 internal data class TimedSubtitleCue(val startMs: Long, val endMs: Long, val text: String)
 
-/**
- * Stability-oriented Media3 buffering profiles.
- * Startup thresholds avoid immediate play on a nearly empty buffer; rebuffer
- * thresholds give the stream time to refill before playback resumes.
- */
 internal data class SonixPlaybackBufferProfile(
     val minBufferMs: Int,
     val maxBufferMs: Int,
@@ -94,23 +86,18 @@ internal data class SonixPlaybackBufferProfile(
 )
 
 internal object SonixPlaybackBufferProfiles {
-    // Live streams: moderate latency with enough reserve for short network jitter.
     val LIVE = SonixPlaybackBufferProfile(
         minBufferMs = 15_000,
         maxBufferMs = 45_000,
         bufferForPlaybackMs = 3_000,
         bufferForPlaybackAfterRebufferMs = 10_000
     )
-
-    // VOD: deeper reserve is affordable because there is no live-edge constraint.
     val VOD = SonixPlaybackBufferProfile(
         minBufferMs = 45_000,
         maxBufferMs = 120_000,
         bufferForPlaybackMs = 5_000,
         bufferForPlaybackAfterRebufferMs = 12_000
     )
-
-    // External audio stays lighter than VOD so it can rejoin video promptly.
     val EXTERNAL_AUDIO = SonixPlaybackBufferProfile(
         minBufferMs = 10_000,
         maxBufferMs = 30_000,
@@ -268,17 +255,7 @@ class MainActivity : ComponentActivity() {
     private var rootContainer: FrameLayout? = null
     private var sonixBackgroundDrawable: SonixBackgroundDrawable? = null
     private var nativePlayer: ExoPlayer? = null
-    // The primary video player is the sole owner of Android audio focus.
-    // The independent external-audio player shares media attributes but must not
-    // request/release focus, otherwise it can interrupt the video player itself.
-    private val sonixMediaAudioAttributes: AudioAttributes by lazy {
-        AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-            .build()
-    }
     private var nativePlayerView: PlayerView? = null
-    @Volatile private var nativeVideoResizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
     private var nativeVideoStreamType: String? = null
     private var nativeVideoStreamId: String? = null
     private val playbackRecoveryHandler = Handler(Looper.getMainLooper())
@@ -407,23 +384,17 @@ class MainActivity : ComponentActivity() {
     private var externalAudioSourceUrl = ""
     @Volatile private var externalAudioActive = false
     private var externalAudioSyncOffsetMs = 0L
-    private var externalAudioSyncRunnable: Runnable? = null
     private var externalAudioVolume = 1f
     private var nativeVideoVolumeBeforeExternalAudio = 1f
     private var nativeVideoMuted = false
     private lateinit var xtreamBridge: XtreamBridge
     private lateinit var sonixControlClient: SonixControlClient
-    private lateinit var performanceEngine: AdaptivePerformanceEngine
     @Volatile private var sonixControlPageReady = false
     @Volatile private var webTextInputFocused = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Initialize Adaptive Performance Engine
-        performanceEngine = AdaptivePerformanceEngine(this)
-        registerComponentCallbacks(performanceEngine)
 
         // Keep screen awake during playback
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -463,19 +434,7 @@ class MainActivity : ComponentActivity() {
 
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                        val url = request?.url ?: return true
-                        val urlStr = url.toString()
-                        if (urlStr == "file:///android_asset/sonix_tv.html" || urlStr == "about:blank") {
-                            return false
-                        }
-                        if (url.scheme == "http" || url.scheme == "https") {
-                            try {
-                                startActivity(Intent(Intent.ACTION_VIEW, url))
-                            } catch (e: Exception) {
-                                android.util.Log.w("SONIX", "Cannot launch external browser for ${CredentialSanitizer.sanitizeUrl(urlStr)}")
-                            }
-                        }
-                        return true
+                        return false
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
@@ -496,12 +455,7 @@ class MainActivity : ComponentActivity() {
 
                 webChromeClient = object : WebChromeClient() {
                     override fun onPermissionRequest(request: PermissionRequest?) {
-                        val origin = request?.origin?.toString().orEmpty()
-                        if (origin == "file://") {
-                            request?.grant(request.resources)
-                        } else {
-                            request?.deny()
-                        }
+                        request?.grant(request.resources)
                     }
                 }
 
@@ -509,16 +463,6 @@ class MainActivity : ComponentActivity() {
                 addJavascriptInterface(xtreamBridge, "XtreamBridge")
                 addJavascriptInterface(SonixControlBridge(), "SonixControlBridge")
                 addJavascriptInterface(NativePlaybackBridge(), "NativePlayback")
-                addJavascriptInterface(PerformanceBridge(performanceEngine), "SonixPerformance")
-            }
-
-            performanceEngine.addTierChangeListener { newTier, _ ->
-                runOnUiThread {
-                    webView?.evaluateJavascript(
-                        "window.SonixPerformanceUI && window.SonixPerformanceUI.applyTier('${newTier.tierName}');",
-                        null
-                    )
-                }
             }
 
             sonixControlClient.onSync = { result ->
@@ -672,27 +616,15 @@ class MainActivity : ComponentActivity() {
                 val mediaSourceFactory = DefaultMediaSourceFactory(this@MainActivity)
                     .setDataSourceFactory(dataSourceFactory)
                 val sharedAllocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
-                val liveProfile = SonixPlaybackBufferProfiles.LIVE
                 val liveLoadControl = DefaultLoadControl.Builder()
                     .setAllocator(sharedAllocator)
-                    .setBufferDurationsMs(
-                        liveProfile.minBufferMs,
-                        liveProfile.maxBufferMs,
-                        liveProfile.bufferForPlaybackMs,
-                        liveProfile.bufferForPlaybackAfterRebufferMs
-                    )
-                    .setPrioritizeTimeOverSizeThresholds(false)
+                    .setBufferDurationsMs(15000, 50000, 2500, 5000)
+                    .setPrioritizeTimeOverSizeThresholds(true)
                     .build()
-                val vodProfile = SonixPlaybackBufferProfiles.VOD
                 val vodLoadControl = DefaultLoadControl.Builder()
                     .setAllocator(sharedAllocator)
-                    .setBufferDurationsMs(
-                        vodProfile.minBufferMs,
-                        vodProfile.maxBufferMs,
-                        vodProfile.bufferForPlaybackMs,
-                        vodProfile.bufferForPlaybackAfterRebufferMs
-                    )
-                    .setPrioritizeTimeOverSizeThresholds(false)
+                    .setBufferDurationsMs(30000, 60000, 2500, 5000)
+                    .setPrioritizeTimeOverSizeThresholds(true)
                     .build()
                 val dynamicLoadControl = DynamicLoadControl(
                     liveLoadControl = liveLoadControl,
@@ -703,7 +635,6 @@ class MainActivity : ComponentActivity() {
                     .setInitialBitrateEstimate(8_000_000L)
                     .build()
                 ExoPlayer.Builder(this@MainActivity)
-                    .setAudioAttributes(sonixMediaAudioAttributes, /* handleAudioFocus= */ true)
                     .setLoadControl(dynamicLoadControl)
                     .setBandwidthMeter(bandwidthMeter)
                     .setMediaSourceFactory(mediaSourceFactory)
@@ -723,7 +654,7 @@ class MainActivity : ComponentActivity() {
                 ).also { nativePlayerView = it }
             playerView.apply {
                 setUseController(false)
-                setResizeMode(nativeVideoResizeMode)
+                setResizeMode(if (immersiveVideoFullscreen) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT)
                 setKeepContentOnPlayerReset(true)
                 setShutterBackgroundColor(Color.TRANSPARENT)
                 setBackgroundColor(Color.TRANSPARENT)
@@ -755,16 +686,16 @@ class MainActivity : ComponentActivity() {
                 .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                 .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
-                .setForceHighestSupportedBitrate(false)
+                .setForceHighestSupportedBitrate(true)
                 .build()
 
             val isLive = streamType == "live"
             val profileName = if (isLive) "LIVE" else "VOD"
-            val minBuf = if (isLive) 40000 else 30000
-            val maxBuf = if (isLive) 40000 else 60000
+            val minBuf = if (isLive) 15000 else 30000
+            val maxBuf = if (isLive) 50000 else 60000
             android.util.Log.i(
                 "SONIXPlayback",
-                "PLAYBACK_PROFILE profile=$profileName minBuffer=${minBuf}ms maxBuffer=${maxBuf}ms playBuffer=${if (isLive) 0 else 2500}ms rebuffer=${if (isLive) 0 else 5000}ms prioritizeTimeOverSize=true initialBitrateEstimate=8Mbps"
+                "PLAYBACK_PROFILE profile=$profileName minBuffer=${minBuf}ms maxBuffer=${maxBuf}ms playBuffer=2500ms rebuffer=5000ms prioritizeTimeOverSize=true initialBitrateEstimate=8Mbps"
             )
 
             // Use an explicit physical LEFT gravity: START would resolve to RIGHT in RTL
@@ -858,8 +789,6 @@ class MainActivity : ComponentActivity() {
                                 "window.onNativePlaybackReady && window.onNativePlaybackReady()", null)
                         }
                         Player.STATE_ENDED -> {
-                            // Do not let a separate live audio source outlive an ended VOD item.
-                            detachExternalAudioInternal(true)
                             bufferingMessageRunnable?.let(bufferingMessageHandler::removeCallbacks)
                             bufferingMessageRunnable = null
                             playbackWatchdogRunnable?.let(playbackRecoveryHandler::removeCallbacks)
@@ -872,13 +801,12 @@ class MainActivity : ComponentActivity() {
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     nativePlayerPlaying = isPlaying
-                    syncExternalAudioPlaybackState()
                     webView?.evaluateJavascript(
                         "window.onNativePlaybackStateChanged && window.onNativePlaybackStateChanged(" + isPlaying + ")", null)
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    val rawDetail = buildString {
+                    val detail = buildString {
                         append("خطأ المشغل: ")
                         append(error.errorCodeName)
                         error.message?.takeIf { it.isNotBlank() }?.let {
@@ -886,8 +814,7 @@ class MainActivity : ComponentActivity() {
                             append(it)
                         }
                     }
-                    val detail = CredentialSanitizer.sanitizeMessage(rawDetail)
-                    android.util.Log.e("SONIXPlayback", "Playback failed: " + error.errorCodeName + " — " + detail)
+                    android.util.Log.e("SONIXPlayback", "Playback failed: " + error.errorCodeName, error)
                     if (nativeVideoStreamType == "live") {
                         val isBehindLive = error.cause is BehindLiveWindowException
                         val httpResponseCode = (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
@@ -950,8 +877,12 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 immersiveVideoFullscreen = enabled
                 applyVideoFullscreenSystemUi()
-                // Preserve the complete video frame in both preview and fullscreen.
-                nativePlayerView?.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                nativePlayerView?.resizeMode = if (enabled) {
+                    // Fill ultrawide phone displays in fullscreen; restore the full frame in preview.
+                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                } else {
+                    AspectRatioFrameLayout.RESIZE_MODE_FIT
+                }
                 // System-bar visibility changes resize the WebView asynchronously. Re-read
                 // its final viewport after the inset/layout pass and realign the native surface.
                 webView?.postDelayed({
@@ -1018,9 +949,10 @@ class MainActivity : ComponentActivity() {
                 if (!player.isCurrentMediaItemSeekable) return@runOnUiThread
                 val target = (player.currentPosition + offsetMs).coerceAtLeast(0L)
                 val duration = player.duration
-                val boundedTarget = if (duration > 0L) target.coerceAtMost(duration) else target
-                player.seekTo(boundedTarget)
-                syncExternalAudioAfterVideoSeek(boundedTarget)
+                player.seekTo(if (duration > 0L) target.coerceAtMost(duration) else target)
+                if (externalAudioActive) {
+                    secondaryAudioPlayer?.seekTo(target)
+                }
             }
         }
 
@@ -1034,23 +966,7 @@ class MainActivity : ComponentActivity() {
                     if (duration > 0L) requested.coerceAtMost(duration) else requested
                 }
                 player.seekTo(target)
-                syncExternalAudioAfterVideoSeek(target)
-            }
-        }
-
-        @android.webkit.JavascriptInterface
-        fun setVideoResizeMode(mode: Int) {
-            runOnUiThread {
-                val resizeMode = when (mode) {
-                    1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                    3 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                    4 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT
-                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                }
-                nativeVideoResizeMode = resizeMode
-                nativePlayerView?.setResizeMode(resizeMode)
-                android.util.Log.i("SONIXPlayback", "setVideoResizeMode: mode=$mode resizeMode=$resizeMode")
+                if (externalAudioActive) secondaryAudioPlayer?.seekTo(target)
             }
         }
 
@@ -1058,24 +974,14 @@ class MainActivity : ComponentActivity() {
         fun setVideoQuality(maxHeight: Int) {
             runOnUiThread {
                 val player = nativePlayer ?: return@runOnUiThread
-                if (maxHeight <= 0) {
-                    // Auto: remove the manual resolution cap and let Media3 adapt to bandwidth.
-                    player.trackSelectionParameters = player.trackSelectionParameters
-                        .buildUpon()
-                        .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
-                        .setForceHighestSupportedBitrate(false)
-                        .build()
-                    android.util.Log.i("SONIXPlayback", "setVideoQuality: Auto (adaptive resolution)")
-                } else {
-                    val height = maxHeight.coerceIn(360, 2160)
-                    val width = (height * 16f / 9f).roundToInt()
-                    player.trackSelectionParameters = player.trackSelectionParameters
-                        .buildUpon()
-                        .setMaxVideoSize(width, height)
-                        .setForceHighestSupportedBitrate(false)
-                        .build()
-                    android.util.Log.i("SONIXPlayback", "setVideoQuality: maxHeight=$height (maxVideoSize=${width}x$height)")
-                }
+                val height = maxHeight.coerceIn(360, 2160)
+                val width = (height * 16f / 9f).roundToInt()
+                player.trackSelectionParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .setMaxVideoSize(width, height)
+                    .setForceHighestSupportedBitrate(height >= 1080)
+                    .build()
+                android.util.Log.i("SONIXPlayback", "setVideoQuality: maxHeight=$height (maxVideoSize=${width}x$height, forceHighestBitrate=${height >= 1080})")
             }
         }
 
@@ -1083,43 +989,24 @@ class MainActivity : ComponentActivity() {
         fun fetchTextAsync(rawUrl: String, requestId: String) {
             subtitleIoExecutor.execute {
                 val payload = try {
-                    var currentUrl = rawUrl.trim()
-                    var redirects = 0
-                    val maxRedirects = 5
-                    var responseBody: String? = null
-
-                    while (redirects < maxRedirects) {
-                        NetworkSecurityValidator.assertSafeUrl(currentUrl)
-                        val connection = URL(currentUrl).openConnection() as HttpURLConnection
-                        connection.requestMethod = "GET"
-                        connection.connectTimeout = 12000
-                        connection.readTimeout = 18000
-                        connection.instanceFollowRedirects = false
-                        connection.setRequestProperty("User-Agent", "SONIX-TV/1.0")
-                        connection.setRequestProperty("Accept", "application/json,text/plain,*/*")
-                        try {
-                            val code = connection.responseCode
-                            if (code in 300..399) {
-                                val location = connection.getHeaderField("Location")
-                                    ?: throw IOException("HTTP $code without Location header")
-                                val nextUrl = URL(URL(currentUrl), location).toString()
-                                NetworkSecurityValidator.assertSafeUrl(nextUrl)
-                                currentUrl = nextUrl
-                                redirects++
-                                continue
-                            }
-                            if (code !in 200..299) throw IllegalStateException("HTTP $code")
-                            val bytes = connection.inputStream.use { it.readBytes() }
-                            require(bytes.size <= 4 * 1024 * 1024) { "استجابة الإضافة أكبر من الحد المسموح" }
-                            responseBody = String(bytes, Charsets.UTF_8)
-                            break
-                        } finally { connection.disconnect() }
-                    }
-                    val body = responseBody ?: throw IOException("تجاوز عدد عمليات إعادة التوجيه المسموح بها")
-                    JSONObject().put("success", true).put("body", body).toString()
+                    val uri = Uri.parse(rawUrl.trim())
+                    require((uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrBlank()) { "رابط الطلب غير صالح" }
+                    val connection = URL(uri.toString()).openConnection() as HttpURLConnection
+                    connection.requestMethod = "GET"
+                    connection.connectTimeout = 12000
+                    connection.readTimeout = 18000
+                    connection.instanceFollowRedirects = true
+                    connection.setRequestProperty("User-Agent", "SONIX-TV/1.0")
+                    connection.setRequestProperty("Accept", "application/json,text/plain,*/*")
+                    try {
+                        val code = connection.responseCode
+                        if (code !in 200..299) throw IllegalStateException("HTTP $code")
+                        val bytes = connection.inputStream.use { it.readBytes() }
+                        require(bytes.size <= 4 * 1024 * 1024) { "استجابة الإضافة أكبر من الحد المسموح" }
+                        JSONObject().put("success", true).put("body", String(bytes, Charsets.UTF_8)).toString()
+                    } finally { connection.disconnect() }
                 } catch (error: Exception) {
-                    val sanitized = CredentialSanitizer.sanitizeMessage(error.message ?: "تعذر الاتصال بمصدر الإضافة")
-                    JSONObject().put("success", false).put("error", sanitized).toString()
+                    JSONObject().put("success", false).put("error", error.message ?: "تعذر الاتصال بمصدر الإضافة").toString()
                 }
                 runOnUiThread { deliverSubtitleResponse(requestId, payload) }
             }
@@ -1133,7 +1020,6 @@ class MainActivity : ComponentActivity() {
             var redirects = 0
             val maxRedirects = 6
             while (redirects < maxRedirects) {
-                NetworkSecurityValidator.assertSafeUrl(currentUrl)
                 val urlObj = URL(currentUrl)
                 val connection = urlObj.openConnection() as HttpURLConnection
                 connection.connectTimeout = 20000
@@ -1151,9 +1037,7 @@ class MainActivity : ComponentActivity() {
                     if (code in 300..399) {
                         val location = connection.getHeaderField("Location")
                             ?: throw IOException("HTTP $code without Location header")
-                        val nextUrl = URL(urlObj, location).toString()
-                        NetworkSecurityValidator.assertSafeUrl(nextUrl)
-                        currentUrl = nextUrl
+                        currentUrl = URL(urlObj, location).toString()
                         redirects++
                         continue
                     }
@@ -1336,16 +1220,32 @@ class MainActivity : ComponentActivity() {
                     require(!(nativeVideoStreamType == "live" && nativeVideoStreamId == normalizedStreamId)) {
                         "اختر قناة صوتية مختلفة عن قناة الفيديو"
                     }
-                    val mediaUri = xtreamBridge.buildPlaybackUri("live", normalizedStreamId, extension)
-                    // The stream IDs have already been compared. Do not compare the
-                    // unresolved/rewritten URL strings for native Xtream streams.
-                    attachExternalAudioInternal(mediaUri.toString(), compareWithVideo = false)
+                    val addonManager = com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
+                    val independentAudioUrl = addonManager.startIndependentAudio(normalizedStreamId, extension) { state, message ->
+                        runOnUiThread {
+                            val payload = JSONObject().put("state", state.code).put("message", message).toString()
+                            webView?.evaluateJavascript("window.onAudioAddonStateChanged && window.onAudioAddonStateChanged($payload)", null)
+                        }
+                    }
+                    // Attach the independent, video-free audio stream to the secondary player
+                    attachExternalAudioInternal(independentAudioUrl, compareWithVideo = false)
                 } catch (error: Exception) {
                     detachExternalAudioInternal(false)
                     val message = JSONObject.quote(error.message ?: "تعذر استخراج رابط القناة الصوتية من الاشتراك")
                     webView?.evaluateJavascript("window.onExternalAudioError && window.onExternalAudioError($message)", null)
                 }
             }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun getAudioAddonInfo(): String {
+            return com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).getAddonInfoJson()
+        }
+
+        @android.webkit.JavascriptInterface
+        fun populateAudioChannels(channelsJson: String): String {
+            val list = com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).populateChannels(channelsJson)
+            return JSONObject().put("success", true).put("count", list.size).toString()
         }
 
         @android.webkit.JavascriptInterface
@@ -1372,7 +1272,7 @@ class MainActivity : ComponentActivity() {
 
         @android.webkit.JavascriptInterface
         fun resumeExternalAudio() {
-            runOnUiThread { syncExternalAudioPlaybackState() }
+            runOnUiThread { if (externalAudioActive) secondaryAudioPlayer?.play() }
         }
 
         @android.webkit.JavascriptInterface
@@ -1435,9 +1335,8 @@ class MainActivity : ComponentActivity() {
         val generation = externalAudioGeneration
         if (!externalAudioActive) {
             nativePlayer?.let { primary ->
-                if (primary.volume > 0f) {
-                    nativeVideoVolumeBeforeExternalAudio = primary.volume
-                }
+                nativeVideoVolumeBeforeExternalAudio = primary.volume
+                primary.volume = 0f
             }
         }
         externalAudioActive = true
@@ -1448,15 +1347,8 @@ class MainActivity : ComponentActivity() {
     private fun startExternalAudioAttempt(generation: Long) {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
-        val audioBufferProfile = SonixPlaybackBufferProfiles.EXTERNAL_AUDIO
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                audioBufferProfile.minBufferMs,
-                audioBufferProfile.maxBufferMs,
-                audioBufferProfile.bufferForPlaybackMs,
-                audioBufferProfile.bufferForPlaybackAfterRebufferMs
-            )
-            .setPrioritizeTimeOverSizeThresholds(false)
+            .setBufferDurationsMs(5000, 30000, 1500, 5000)
             .build()
         // Use the same IPTV HTTP identity and redirect handling as the primary
         // video player. Some providers reject ExoPlayer's default User-Agent.
@@ -1467,9 +1359,6 @@ class MainActivity : ComponentActivity() {
             .setReadTimeoutMs(30000)
         val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
         val audioPlayer = ExoPlayer.Builder(this)
-            // Do not request audio focus from the second player. The video player
-            // owns focus for the combined SONIX playback session.
-            .setAudioAttributes(sonixMediaAudioAttributes, /* handleAudioFocus= */ false)
             .setLoadControl(loadControl)
             .setMediaSourceFactory(mediaSourceFactory)
             .build().apply {
@@ -1488,16 +1377,7 @@ class MainActivity : ComponentActivity() {
                         externalAudioRetryRunnable?.let(externalAudioHandler::removeCallbacks)
                         externalAudioRetryRunnable = null
                         externalAudioRetryAttempt = 0
-                        if (externalAudioActive && !nativeVideoMuted) {
-                            nativePlayer?.let { primary ->
-                                if (primary.volume > 0f) {
-                                    nativeVideoVolumeBeforeExternalAudio = primary.volume
-                                }
-                                primary.volume = 0f
-                            }
-                        }
                         applyExternalAudioSyncOffset()
-                        syncExternalAudioPlaybackState()
                         webView?.evaluateJavascript(
                             "window.onExternalAudioPlaying && window.onExternalAudioPlaying()", null)
                     }
@@ -1520,6 +1400,8 @@ class MainActivity : ComponentActivity() {
             val mimeType = when (extension) {
                 "m3u8" -> MimeTypes.APPLICATION_M3U8
                 "mpd" -> MimeTypes.APPLICATION_MPD
+                "aac" -> MimeTypes.AUDIO_AAC
+                "mp3" -> MimeTypes.AUDIO_MPEG
                 else -> null
             }
             val mediaItem = MediaItem.Builder()
@@ -1538,13 +1420,6 @@ class MainActivity : ComponentActivity() {
     private fun scheduleExternalAudioRetry(generation: Long) {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
-        if (!nativeVideoMuted) {
-            nativePlayer?.let { primary ->
-                if (primary.volume == 0f && nativeVideoVolumeBeforeExternalAudio > 0f) {
-                    primary.volume = nativeVideoVolumeBeforeExternalAudio
-                }
-            }
-        }
         externalAudioRetryAttempt = (externalAudioRetryAttempt + 1).coerceAtMost(6)
         val delayMs = externalAudioRetryDelayMs(externalAudioRetryAttempt)
         webView?.evaluateJavascript("window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
@@ -1561,104 +1436,18 @@ class MainActivity : ComponentActivity() {
         applyExternalAudioSyncOffset()
     }
 
-    /**
-     * Apply the requested offset from the video clock, never from the previous
-     * audio position. This prevents repeated +/- adjustments from accumulating.
-     * Live streams use live-edge offset feedback instead of unsafe seeks.
-     */
     private fun applyExternalAudioSyncOffset() {
-        val video = nativePlayer ?: return
-        val audio = secondaryAudioPlayer ?: return
+        val player = secondaryAudioPlayer ?: return
+        val offset = externalAudioSyncOffsetMs
         try {
-            if (video.isCurrentMediaItemLive && audio.isCurrentMediaItemLive) {
-                startExternalAudioSyncMonitor(externalAudioGeneration)
-                return
+            if (offset > 0L) {
+                val position = player.currentPosition
+                if (position > offset) player.seekTo(position - offset)
+            } else if (offset < 0L) {
+                player.seekTo(player.currentPosition + kotlin.math.abs(offset))
             }
-            stopExternalAudioSyncMonitor()
-            audio.setPlaybackParameters(audio.playbackParameters.withSpeed(1f))
-            if (video.isCurrentMediaItemLive || audio.isCurrentMediaItemLive ||
-                !video.isCurrentMediaItemSeekable || !audio.isCurrentMediaItemSeekable) return
-            val videoDuration = video.duration
-            val audioDuration = audio.duration
-            if (videoDuration <= 0L || audioDuration <= 0L ||
-                videoDuration == C.TIME_UNSET || audioDuration == C.TIME_UNSET ||
-                kotlin.math.abs(videoDuration - audioDuration) > 10000L) return
-            val target = ExternalAudioSyncPolicy.targetPositionMs(
-                video.currentPosition, externalAudioSyncOffsetMs, audioDuration
-            )
-            audio.seekTo(target)
         } catch (e: Exception) {
-            android.util.Log.w("SONIXExternalAudio", "Offset application failed: " + CredentialSanitizer.sanitizeMessage(e.message ?: "unknown error"))
-        }
-    }
-
-    private fun syncExternalAudioAfterVideoSeek(videoTargetMs: Long) {
-        if (!externalAudioActive) return
-        val video = nativePlayer ?: return
-        val audio = secondaryAudioPlayer ?: return
-        if (video.isCurrentMediaItemLive || audio.isCurrentMediaItemLive ||
-            !video.isCurrentMediaItemSeekable || !audio.isCurrentMediaItemSeekable) return
-        val videoDuration = video.duration
-        val audioDuration = audio.duration
-        if (videoDuration <= 0L || audioDuration <= 0L ||
-            videoDuration == C.TIME_UNSET || audioDuration == C.TIME_UNSET ||
-            kotlin.math.abs(videoDuration - audioDuration) > 10000L) return
-        val target = ExternalAudioSyncPolicy.targetPositionMs(
-            videoTargetMs, externalAudioSyncOffsetMs, audioDuration
-        )
-        audio.seekTo(target)
-    }
-
-    private fun startExternalAudioSyncMonitor(generation: Long) {
-        stopExternalAudioSyncMonitor()
-        lateinit var syncTask: Runnable
-        syncTask = Runnable {
-            if (generation != externalAudioGeneration || !externalAudioActive) {
-                if (externalAudioSyncRunnable === syncTask) externalAudioSyncRunnable = null
-                return@Runnable
-            }
-            correctExternalAudioLiveDrift()
-            externalAudioHandler.postDelayed(syncTask, 1000L)
-        }
-        externalAudioSyncRunnable = syncTask
-        externalAudioHandler.post(syncTask)
-    }
-
-    private fun stopExternalAudioSyncMonitor() {
-        externalAudioSyncRunnable?.let(externalAudioHandler::removeCallbacks)
-        externalAudioSyncRunnable = null
-        secondaryAudioPlayer?.let { audio ->
-            try {
-                audio.setPlaybackParameters(audio.playbackParameters.withSpeed(1f))
-            } catch (_: Exception) { }
-        }
-    }
-
-    @androidx.media3.common.util.UnstableApi
-    private fun correctExternalAudioLiveDrift() {
-        val video = nativePlayer ?: return
-        val audio = secondaryAudioPlayer ?: return
-        if (!video.isCurrentMediaItemLive || !audio.isCurrentMediaItemLive) return
-        val videoLiveOffset = video.currentLiveOffset
-        val audioLiveOffset = audio.currentLiveOffset
-        if (videoLiveOffset == C.TIME_UNSET || audioLiveOffset == C.TIME_UNSET ||
-            videoLiveOffset < 0L || audioLiveOffset < 0L) return
-        val speed = ExternalAudioSyncPolicy.livePlaybackSpeed(
-            videoLiveOffset, audioLiveOffset, externalAudioSyncOffsetMs
-        )
-        audio.setPlaybackParameters(audio.playbackParameters.withSpeed(speed))
-    }
-
-    private fun syncExternalAudioPlaybackState() {
-        if (!externalAudioActive) return
-        val video = nativePlayer
-        val audio = secondaryAudioPlayer ?: return
-        // Keep the independent audio stream running while video is buffering.
-        // Only follow explicit video play/pause intent; STATE_BUFFERING is not a pause request.
-        if (video == null || !video.playWhenReady) {
-            audio.pause()
-        } else {
-            audio.play()
+            android.util.Log.w("SONIXExternalAudio", "Offset seek failed", e)
         }
     }
 
@@ -1670,9 +1459,8 @@ class MainActivity : ComponentActivity() {
         externalAudioSourceUrl = ""
         val wasActive = externalAudioActive
         externalAudioActive = false
-        externalAudioSyncOffsetMs = 0L
-        stopExternalAudioSyncMonitor()
         releaseSecondaryAudio()
+        try { com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).stopIndependentAudio() } catch (_: Exception) {}
         if (wasActive && !nativeVideoMuted) {
             nativePlayer?.volume = nativeVideoVolumeBeforeExternalAudio
         }
@@ -2055,8 +1843,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun resetNativePlayerForNextItem() {
-        // A new video item must never inherit the previous channel's external audio.
-        detachExternalAudioInternal(true)
         bufferingMessageRunnable?.let(bufferingMessageHandler::removeCallbacks)
         bufferingMessageRunnable = null
         playbackProgressHandler.removeCallbacks(playbackProgressRunnable)
@@ -2148,8 +1934,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopNativePlayer() {
-        // Keep native stop safe even when the caller did not come through the JS UI.
-        detachExternalAudioInternal(true)
         bufferingMessageRunnable?.let(bufferingMessageHandler::removeCallbacks)
         bufferingMessageRunnable = null
         playbackProgressHandler.removeCallbacks(playbackProgressRunnable)
@@ -2398,10 +2182,8 @@ class MainActivity : ComponentActivity() {
         immersiveVideoFullscreen = false
         applyVideoFullscreenSystemUi()
         detachExternalAudioInternal(false)
+        try { com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).shutdown() } catch (_: Exception) {}
         stopNativePlayer()
-        if (::performanceEngine.isInitialized) {
-            unregisterComponentCallbacks(performanceEngine)
-        }
         if (::sonixControlClient.isInitialized) sonixControlClient.shutdown()
         if (::xtreamBridge.isInitialized) xtreamBridge.shutdown()
         subtitleIoExecutor.shutdownNow()

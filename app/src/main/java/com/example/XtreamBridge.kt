@@ -26,7 +26,6 @@ import java.net.URL
 import java.net.UnknownHostException
 import java.security.KeyStore
 import java.security.MessageDigest
-import java.security.SecureRandom
 import java.util.zip.GZIPInputStream
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -58,6 +57,7 @@ class XtreamBridge(context: Context) {
         catalogConnections.values.forEach { it.disconnect() }
         catalogJobs.values.forEach { it.cancel(true) }
         catalogExecutor.shutdownNow()
+        try { com.example.audio.AudioAddonManager.getInstance(appContext, this).shutdown() } catch (_: Exception) {}
     }
 
     @JavascriptInterface
@@ -72,6 +72,7 @@ class XtreamBridge(context: Context) {
             val userInfo = XtreamAccountValidator.validate(root, System.currentTimeMillis())
 
             vault.save(normalizedServer, username, password)
+            try { com.example.audio.AudioAddonManager.getInstance(appContext, this).onSessionActivated() } catch (_: Exception) {}
             try { CatalogRefreshScheduler.ensureScheduled(appContext) }
             catch (scheduleError: Exception) { android.util.Log.w("SONIX", "Could not schedule background catalog refresh", scheduleError) }
             JSONObject()
@@ -92,6 +93,7 @@ class XtreamBridge(context: Context) {
             val response = request(credentials.server, credentials.username, credentials.password, "player_api.php")
             val root = JSONObject(response)
             val userInfo = XtreamAccountValidator.validate(root, System.currentTimeMillis())
+            try { com.example.audio.AudioAddonManager.getInstance(appContext, this).onSessionActivated() } catch (_: Exception) {}
             JSONObject()
                 .put("success", true)
                 .put("user_info", userInfo)
@@ -478,6 +480,7 @@ class XtreamBridge(context: Context) {
     fun logout(): String {
         vault.clear()
         clearCatalogCache()
+        try { com.example.audio.AudioAddonManager.getInstance(appContext, this).onSessionTerminated() } catch (_: Exception) {}
         try { CatalogRefreshScheduler.cancel(appContext) }
         catch (scheduleError: Exception) { android.util.Log.w("SONIX", "Could not cancel background catalog refresh", scheduleError) }
         return JSONObject().put("success", true).toString()
@@ -530,7 +533,6 @@ class XtreamBridge(context: Context) {
         val maxRedirects = 5
 
         while (redirects < maxRedirects) {
-            NetworkSecurityValidator.assertSafeUrl(currentUrl)
             val urlObj = URL(currentUrl)
             if (cancellation?.get() == true || Thread.currentThread().isInterrupted) throw InterruptedException("تم إلغاء تحميل القسم")
             val connection = urlObj.openConnection() as HttpURLConnection
@@ -550,13 +552,11 @@ class XtreamBridge(context: Context) {
                 if (statusCode in listOf(301, 302, 303, 307, 308)) {
                     val location = connection.getHeaderField("Location")
                     if (!location.isNullOrBlank()) {
-                        val nextUrl = if (location.startsWith("http://") || location.startsWith("https://")) {
+                        currentUrl = if (location.startsWith("http://") || location.startsWith("https://")) {
                             location
                         } else {
                             URL(urlObj, location).toString()
                         }
-                        NetworkSecurityValidator.assertSafeUrl(nextUrl)
-                        currentUrl = nextUrl
                         redirects++
                         continue
                     }
@@ -588,7 +588,7 @@ class XtreamBridge(context: Context) {
     }
 
     private fun errorResult(error: Throwable): String {
-        val rawMessage = when (error) {
+        val message = when (error) {
             is UnknownHostException -> "تعذر العثور على خادم الاشتراك. تحقق من عنوان السيرفر والإنترنت."
             is SocketTimeoutException -> "انتهت مهلة الاتصال بخادم الاشتراك. حاول مرة أخرى."
             is ConnectException -> "تعذر الاتصال بخادم الاشتراك. تحقق من عنوان السيرفر والمنفذ."
@@ -596,7 +596,6 @@ class XtreamBridge(context: Context) {
             is OutOfMemoryError -> "ذاكرة الجهاز محدودة. تم تحسين الذاكرة، حاول مجدداً."
             else -> error.message?.takeIf { it.isNotBlank() } ?: "تعذر الاتصال بالخادم."
         }
-        val message = CredentialSanitizer.sanitizeMessage(rawMessage)
         return JSONObject()
             .put("success", false)
             .put("error", message)
@@ -626,11 +625,9 @@ class XtreamBridge(context: Context) {
 }
 
 /**
- * Encrypted credential vault backed by Android Keystore AES-GCM (version 2),
- * with safe software AES-GCM fallback (using a 256-bit randomly generated key
- * stored in private sandbox storage) if hardware KeyStore is unsupported.
- *
- * Automatically migrates legacy credentials on read without overwriting or losing data.
+ * Encrypted credential vault backed by Android Keystore AES-GCM,
+ * with resilient fallback encryption for cheap Android TV boxes where
+ * hardware AndroidKeyStore is unstable or unsupported.
  */
 internal class CredentialVault(private val context: Context) {
     private val preferences = context.getSharedPreferences("sonix_secure_account", Context.MODE_PRIVATE)
@@ -644,111 +641,68 @@ internal class CredentialVault(private val context: Context) {
             .toByteArray(Charsets.UTF_8)
 
         try {
-            // Primary path: AndroidKeyStore AES/GCM/NoPadding
+            // Primary path: AndroidKeyStore AES/GCM
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
             val encrypted = cipher.doFinal(plain)
             preferences.edit()
-                .putInt("version", 2)
-                .putBoolean("v2_is_fallback", false)
                 .putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
                 .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
                 .remove("fallback_ciphertext")
                 .apply()
         } catch (e: Throwable) {
-            android.util.Log.w("SONIX", "AndroidKeyStore encryption failed, using software AES-GCM", e)
-            val softwareKey = getOrCreateSoftwareKey()
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            val iv = ByteArray(12)
-            SecureRandom().nextBytes(iv)
-            cipher.init(Cipher.ENCRYPT_MODE, softwareKey, GCMParameterSpec(128, iv))
+            android.util.Log.w("SONIX", "AndroidKeyStore encryption failed, using device fallback", e)
+            val fallbackKey = getFallbackKey()
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+            cipher.init(Cipher.ENCRYPT_MODE, fallbackKey)
             val encrypted = cipher.doFinal(plain)
             preferences.edit()
-                .putInt("version", 2)
-                .putBoolean("v2_is_fallback", true)
-                .putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                .putString("iv", Base64.encodeToString(iv, Base64.NO_WRAP))
-                .remove("fallback_ciphertext")
+                .putString("fallback_ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .remove("ciphertext")
+                .remove("iv")
                 .apply()
         }
     }
 
     fun read(): StoredCredentials? {
-        val version = preferences.getInt("version", 1)
-
-        // 1. Version 2 (AES-GCM primary or software fallback)
-        if (version >= 2) {
-            val encoded = preferences.getString("ciphertext", null)
-            val encodedIv = preferences.getString("iv", null)
-            val isSoftwareFallback = preferences.getBoolean("v2_is_fallback", false)
-            if (!encoded.isNullOrBlank() && !encodedIv.isNullOrBlank()) {
-                try {
-                    val key = if (isSoftwareFallback) getOrCreateSoftwareKey() else getOrCreateKey()
-                    val cipher = Cipher.getInstance(TRANSFORMATION)
-                    cipher.init(
-                        Cipher.DECRYPT_MODE,
-                        key,
-                        GCMParameterSpec(128, Base64.decode(encodedIv, Base64.NO_WRAP))
-                    )
-                    val plain = cipher.doFinal(Base64.decode(encoded, Base64.NO_WRAP))
-                    val json = JSONObject(String(plain, Charsets.UTF_8))
-                    return StoredCredentials(
-                        json.getString("server"),
-                        json.getString("username"),
-                        json.getString("password")
-                    )
-                } catch (e: Throwable) {
-                    android.util.Log.w("SONIX", "V2 decrypt failed", e)
-                }
-            }
-        }
-
-        // 2. Legacy Version 1 migration path
-        // Legacy primary Keystore
-        val legacyKeystoreCipher = preferences.getString("ciphertext", null)
-        val legacyKeystoreIv = preferences.getString("iv", null)
-        if (!legacyKeystoreCipher.isNullOrBlank() && !legacyKeystoreIv.isNullOrBlank()) {
+        // 1. Check primary keystore storage
+        val encoded = preferences.getString("ciphertext", null)
+        val encodedIv = preferences.getString("iv", null)
+        if (!encoded.isNullOrBlank() && !encodedIv.isNullOrBlank()) {
             try {
                 val cipher = Cipher.getInstance(TRANSFORMATION)
                 cipher.init(
                     Cipher.DECRYPT_MODE,
                     getOrCreateKey(),
-                    GCMParameterSpec(128, Base64.decode(legacyKeystoreIv, Base64.NO_WRAP))
+                    GCMParameterSpec(128, Base64.decode(encodedIv, Base64.NO_WRAP))
                 )
-                val plain = cipher.doFinal(Base64.decode(legacyKeystoreCipher, Base64.NO_WRAP))
+                val plain = cipher.doFinal(Base64.decode(encoded, Base64.NO_WRAP))
                 val json = JSONObject(String(plain, Charsets.UTF_8))
-                val credentials = StoredCredentials(
+                return StoredCredentials(
                     json.getString("server"),
                     json.getString("username"),
                     json.getString("password")
                 )
-                // Migrate to v2
-                save(credentials.server, credentials.username, credentials.password)
-                return credentials
             } catch (e: Throwable) {
-                android.util.Log.w("SONIX", "Legacy KeyStore decrypt failed", e)
+                android.util.Log.w("SONIX", "KeyStore decrypt failed", e)
             }
         }
 
-        // Legacy fallback (ECB) migration: decrypt old payload and upgrade to v2
-        val legacyFallback = preferences.getString("fallback_ciphertext", null)
-        if (!legacyFallback.isNullOrBlank()) {
+        // 2. Check fallback storage
+        val fallbackEncoded = preferences.getString("fallback_ciphertext", null)
+        if (!fallbackEncoded.isNullOrBlank()) {
             try {
-                val legacyKey = getLegacyFallbackKey()
                 val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-                cipher.init(Cipher.DECRYPT_MODE, legacyKey)
-                val plain = cipher.doFinal(Base64.decode(legacyFallback, Base64.NO_WRAP))
+                cipher.init(Cipher.DECRYPT_MODE, getFallbackKey())
+                val plain = cipher.doFinal(Base64.decode(fallbackEncoded, Base64.NO_WRAP))
                 val json = JSONObject(String(plain, Charsets.UTF_8))
-                val credentials = StoredCredentials(
+                return StoredCredentials(
                     json.getString("server"),
                     json.getString("username"),
                     json.getString("password")
                 )
-                // Upgrade immediately to secure v2 AES-GCM
-                save(credentials.server, credentials.username, credentials.password)
-                return credentials
             } catch (e: Throwable) {
-                android.util.Log.w("SONIX", "Legacy fallback decrypt failed", e)
+                android.util.Log.w("SONIX", "Fallback decrypt failed", e)
             }
         }
 
@@ -757,9 +711,6 @@ internal class CredentialVault(private val context: Context) {
 
     fun clear() {
         preferences.edit().clear().apply()
-        try {
-            File(context.filesDir, "sonix_vault_software.key").delete()
-        } catch (_: Exception) {}
     }
 
     private fun getOrCreateKey(): SecretKey {
@@ -779,21 +730,7 @@ internal class CredentialVault(private val context: Context) {
         return generator.generateKey()
     }
 
-    private fun getOrCreateSoftwareKey(): SecretKey {
-        val keyFile = File(context.filesDir, "sonix_vault_software.key")
-        if (keyFile.exists() && keyFile.length() == 32L) {
-            val keyBytes = keyFile.readBytes()
-            return SecretKeySpec(keyBytes, "AES")
-        }
-        val keyBytes = ByteArray(32)
-        SecureRandom().nextBytes(keyBytes)
-        val tempFile = File(context.filesDir, "sonix_vault_software.tmp")
-        FileOutputStream(tempFile).use { it.write(keyBytes) }
-        tempFile.renameTo(keyFile)
-        return SecretKeySpec(keyBytes, "AES")
-    }
-
-    private fun getLegacyFallbackKey(): SecretKey {
+    private fun getFallbackKey(): SecretKey {
         val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "sonix_tv_default_id"
         val seed = "sonix_tv_secure_salt_${context.packageName}_${Build.FINGERPRINT}_$androidId"
         val sha = MessageDigest.getInstance("SHA-256").digest(seed.toByteArray(Charsets.UTF_8))

@@ -7,6 +7,10 @@
   const STYLE_KEY = 'sonix_subtitle_style_v1';
   const LANGUAGE_KEY = 'sonix_subtitle_language_v1';
   const DEFAULT_ADDONS = [
+    { id:'com.sonix.addon.audio', name:'SONIX AUDIO', version:'1.0.0',
+      description:'محرك صوت داخلي أصلي لفك ترميز قنوات beIN SPORTS و ALWAN واستخراجها كموارد صوتية مستقلة',
+      url:'https://native.sonix.tv/audio/manifest.json',
+      types:['tv','channel','audio'], resources:['audio_extractor','pcm_decoder'], enabled:true, isInternal:true },
     { id:'com.linvo.cinemeta', name:'Cinemeta', version:'3.0.14',
       description:'The official addon for movie and series catalogs',
       url:'https://v3-cinemeta.strem.io/manifest.json',
@@ -172,14 +176,22 @@
       const actions = document.createElement('div');
       actions.className = 'addon-card-actions';
       if (activeTab === 'installed') {
-        const toggle = document.createElement('button');
-        toggle.className = 'action-btn focusable settings-action-secondary';
-        toggle.textContent = addon.enabled === false ? 'تفعيل' : 'تعطيل';
-        toggle.addEventListener('click', () => {
-          addon.enabled = addon.enabled === false;
-          saveInstalled(); renderAddons();
-        });
-        actions.appendChild(toggle);
+        if (addon.isInternal) {
+          const badge = document.createElement('span');
+          badge.className = 'action-btn';
+          badge.style.cssText = 'background:rgba(46,125,50,0.2);color:#81C784;border:1px solid #81C784;cursor:default;font-weight:bold;';
+          badge.textContent = '✓ مدمجة ومفعّلة';
+          actions.appendChild(badge);
+        } else {
+          const toggle = document.createElement('button');
+          toggle.className = 'action-btn focusable settings-action-secondary';
+          toggle.textContent = addon.enabled === false ? 'تفعيل' : 'تعطيل';
+          toggle.addEventListener('click', () => {
+            addon.enabled = addon.enabled === false;
+            saveInstalled(); renderAddons();
+          });
+          actions.appendChild(toggle);
+        }
         if (!DEFAULT_ADDONS.some(x => x.id === addon.id)) {
           const remove = document.createElement('button');
           remove.className = 'action-btn focusable addon-remove';

@@ -852,10 +852,29 @@
       resetDelay() { this.delayMs = 0; this.updateDelayLabel(); if (window.NativePlayback) window.NativePlayback.setExternalAudioSyncOffset(0); }
       updateDelayLabel() { this.delayLabelEl.textContent = (this.delayMs > 0 ? '+' : '') + this.delayMs + ' ms'; }
       setStatus(type, label) { this.statusPillEl.className = 'audio-status-pill status-' + type; this.statusTextEl.textContent = label; }
+      onAddonState(payload) {
+        if (!this.isActive) return;
+        try {
+          const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
+          if (!data) return;
+          const msg = data.message || '';
+          const state = data.state || '';
+          if (state.startsWith('failed')) {
+            this.onFailure(msg);
+          } else if (state === 'decoding_pcm' || state === 'output_producing' || state === 'resource_ready') {
+            this.setStatus('connecting', msg || 'فك ترميز PCM للمورد المستقل...');
+          } else if (state === 'playing') {
+            this.setStatus('playing', 'مورد صوتي مستقل يعمل');
+          } else if (msg) {
+            this.statusTextEl.textContent = msg;
+          }
+        } catch (_) {}
+      }
       pause() { if (window.NativePlayback) window.NativePlayback.pauseExternalAudio(); }
       resume() { if (this.isActive && window.NativePlayback) window.NativePlayback.resumeExternalAudio(); }
       releaseAll() { this.stopExternalAudio(false); }
     }
+    window.onAudioAddonStateChanged = function(data) { if (dualAudioEngine) dualAudioEngine.onAddonState(data); };
     window.onExternalAudioBuffering = function() { if (dualAudioEngine) dualAudioEngine.onBuffering(); };
     window.onExternalAudioPlaying = function() { if (dualAudioEngine) dualAudioEngine.onPlaying(); };
     window.onExternalAudioError = function(message) { if (dualAudioEngine) dualAudioEngine.onFailure(message); };
@@ -2305,7 +2324,13 @@
         series=payload.items.map((x,i)=>({id:String(x.series_id),seriesId:String(x.series_id),number:i+1,name:x.name||'مسلسل',category:x.category_id==null?'':'series-'+x.category_id,categoryName:names.get(String(x.category_id))||'',logo:x.cover||'',logoText:'',streamUrl:'',rating:x.rating||'',desc:x.plot||'',year:x.releaseDate?String(x.releaseDate).substring(0,4):(x.year||''),genre:x.genre||''}));
       }
       catalogSavedAt[section]=Number(payload.savedAt||Date.now());
-      if(currentAppMode===config.mode){currentActiveCategory='all';renderCategories();renderItems();if(section==='live')renderAudioSourcePicker();}
+      if(currentAppMode===config.mode){
+        currentActiveCategory='all';renderCategories();renderItems();
+        if(section==='live'){
+          renderAudioSourcePicker();
+          try{if(window.NativePlayback&&window.NativePlayback.populateAudioChannels)window.NativePlayback.populateAudioChannels(JSON.stringify(payload.items));}catch(_){}
+        }
+      }
     }
 
     function startCatalogSync(section,options={}){
