@@ -675,7 +675,8 @@ class MainActivity : ComponentActivity() {
                     isLiveProvider = { nativeVideoStreamType == "live" }
                 )
                 val bandwidthMeter = DefaultBandwidthMeter.Builder(this@MainActivity)
-                    .setInitialBitrateEstimate(8_000_000L)
+                    // Use measured transfer bandwidth instead of biasing startup
+                    // toward an arbitrary fixed 8 Mbps estimate.
                     .build()
                 ExoPlayer.Builder(this@MainActivity)
                     .setLoadControl(dynamicLoadControl)
@@ -729,16 +730,23 @@ class MainActivity : ComponentActivity() {
                 .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                 .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
-                .setForceHighestSupportedBitrate(true)
+                // Keep adaptive bitrate selection enabled. Forcing the highest
+                // supported bitrate can select a rendition the connection
+                // cannot sustain and cause repeated rebuffering.
+                .setForceHighestSupportedBitrate(false)
                 .build()
 
             val isLive = streamType == "live"
             val profileName = if (isLive) "LIVE" else "VOD"
-            val minBuf = if (isLive) 15000 else 30000
-            val maxBuf = if (isLive) 50000 else 60000
+            val appliedProfile = if (isLive) SonixPlaybackBufferProfiles.LIVE else SonixPlaybackBufferProfiles.VOD
             android.util.Log.i(
                 "SONIXPlayback",
-                "PLAYBACK_PROFILE profile=$profileName minBuffer=${minBuf}ms maxBuffer=${maxBuf}ms playBuffer=2500ms rebuffer=5000ms prioritizeTimeOverSize=true initialBitrateEstimate=8Mbps"
+                "PLAYBACK_PROFILE profile=$profileName " +
+                    "minBuffer=${appliedProfile.minBufferMs}ms " +
+                    "maxBuffer=${appliedProfile.maxBufferMs}ms " +
+                    "playBuffer=${appliedProfile.bufferForPlaybackMs}ms " +
+                    "rebuffer=${appliedProfile.bufferForPlaybackAfterRebufferMs}ms " +
+                    "prioritizeTimeOverSize=true bandwidthEstimate=Default"
             )
 
             // Use an explicit physical LEFT gravity: START would resolve to RIGHT in RTL
@@ -1031,7 +1039,8 @@ class MainActivity : ComponentActivity() {
                     player.trackSelectionParameters = player.trackSelectionParameters
                         .buildUpon()
                         .setMaxVideoSize(width, height)
-                        .setForceHighestSupportedBitrate(height >= 1080)
+                        // Resolution is a ceiling; bitrate remains adaptive to bandwidth.
+                        .setForceHighestSupportedBitrate(false)
                         .build()
                     android.util.Log.i("SONIXPlayback", "setVideoQuality: maxHeight=$height (maxVideoSize=${width}x$height, forceHighestBitrate=${height >= 1080})")
                 }
