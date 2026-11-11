@@ -321,4 +321,102 @@ class AudioAddonEngineTest {
         assertFalse(sessionManager.isSessionReady())
         sessionManager.shutdown()
     }
+
+    // =========================================================================
+    // 7. Multi-Channel PCM Downmix & Split Packet Reassembly Tests
+    // =========================================================================
+
+    @Test
+    fun downmixToStereo_converts5Point1ToStereoCorrectly() {
+        // 1 frame of 5.1 PCM (6 channels * 2 bytes = 12 bytes)
+        // L=1000, R=2000, C=1000, LFE=5000, Ls=1000, Rs=1000
+        val pcm51 = ByteArray(12)
+        // L = 1000
+        pcm51[0] = (1000 and 0xFF).toByte()
+        pcm51[1] = ((1000 shr 8) and 0xFF).toByte()
+        // R = 2000
+        pcm51[2] = (2000 and 0xFF).toByte()
+        pcm51[3] = ((2000 shr 8) and 0xFF).toByte()
+        // C = 1000
+        pcm51[4] = (1000 and 0xFF).toByte()
+        pcm51[5] = ((1000 shr 8) and 0xFF).toByte()
+        // LFE = 5000
+        pcm51[6] = (5000 and 0xFF).toByte()
+        pcm51[7] = ((5000 shr 8) and 0xFF).toByte()
+        // Ls = 1000
+        pcm51[8] = (1000 and 0xFF).toByte()
+        pcm51[9] = ((1000 shr 8) and 0xFF).toByte()
+        // Rs = 1000
+        pcm51[10] = (1000 and 0xFF).toByte()
+        pcm51[11] = ((1000 shr 8) and 0xFF).toByte()
+
+        val stereo = AudioOnlyOutputEngine.downmixToStereo(pcm51, 6)
+        assertEquals("Stereo output must be 4 bytes per frame", 4, stereo.size)
+
+        val outL = ((stereo[0].toInt() and 0xFF) or (stereo[1].toInt() shl 8)).toShort()
+        val outR = ((stereo[2].toInt() and 0xFF) or (stereo[3].toInt() shl 8)).toShort()
+
+        // Expected:
+        // outL = 1000 + 0.707*1000 + 0.707*1000 = 1000 + 707 + 707 = ~2414
+        // outR = 2000 + 0.707*1000 + 0.707*1000 = 2000 + 707 + 707 = ~3414
+        assertTrue("outL must be approximately 2414", outL in 2410..2420)
+        assertTrue("outR must be approximately 3414", outR in 3410..3420)
+    }
+
+    @Test
+    fun downmixToStereo_convertsMonoToStereoDuplicate() {
+        // 1 frame of mono PCM = 2 bytes
+        val mono = byteArrayOf(0x34.toByte(), 0x12.toByte()) // 0x1234
+        val stereo = AudioOnlyOutputEngine.downmixToStereo(mono, 1)
+
+        assertEquals(4, stereo.size)
+        // Left
+        assertEquals(0x34.toByte(), stereo[0])
+        assertEquals(0x12.toByte(), stereo[1])
+        // Right (duplicated)
+        assertEquals(0x34.toByte(), stereo[2])
+        assertEquals(0x12.toByte(), stereo[3])
+    }
+
+    @Test
+    fun demuxer_reassemblesSplitPacketsAcrossTcpReads() {
+        val extractedFrames = mutableListOf<ExtractedAudioFrame>()
+        val demuxer = TsAudioDemuxer(onFrameExtracted = { extractedFrames.add(it) })
+
+        val payload = ByteArray(30) { 0x55.toByte() }
+        val validAdts = AudioOnlyOutputEngine.addAdtsHeader(payload, 48000, 2)
+        val pesHeader = byteArrayOf(
+            0x00, 0x00, 0x01, 0xC0.toByte(),
+            0x00, 0x30,
+            0x80.toByte(), 0x80.toByte(),
+            0x05,
+            0x21, 0x00, 0x01, 0x00, 0x01
+        )
+        val fullPes = pesHeader + validAdts
+
+        val tsPacket1 = ByteArray(188)
+        tsPacket1[0] = 0x47.toByte()
+        tsPacket1[1] = 0x40.toByte()
+        tsPacket1[2] = 200.toByte()
+        tsPacket1[3] = 0x10.toByte()
+        System.arraycopy(fullPes, 0, tsPacket1, 4, fullPes.size.coerceAtMost(184))
+
+        val tsPacket2 = ByteArray(188)
+        tsPacket2[0] = 0x47.toByte()
+        tsPacket2[1] = 0x40.toByte() // PUSI = 1 flush
+        tsPacket2[2] = 200.toByte()
+        tsPacket2[3] = 0x10.toByte()
+
+        val fullData = tsPacket1 + tsPacket2 // 376 bytes
+        // Split deliberately in the middle of tsPacket1 at byte 100
+        val chunk1 = fullData.copyOfRange(0, 100)
+        val chunk2 = fullData.copyOfRange(100, 376)
+
+        demuxer.processTsData(chunk1, chunk1.size)
+        demuxer.processTsData(chunk2, chunk2.size)
+
+        assertEquals("Should successfully extract 1 frame despite split TCP delivery", 1, extractedFrames.size)
+        assertEquals(48000, extractedFrames[0].sampleRate)
+        assertEquals(2, extractedFrames[0].channelCount)
+    }
 }

@@ -35,6 +35,7 @@ class AudioOnlyOutputEngine(
         private const val TAG = "SONIXAudioOutput"
         private const val TIMEOUT_US = 5000L
         private const val RECENT_BUFFER_MAX_FRAMES = 60 // ~1.3 seconds burst for instant playback
+        const val OUTPUT_CHANNELS = 2 // Always stereo for universal Android hardware encoder compatibility
 
         /**
          * Generates standard 7-byte ADTS header for AAC frame.
@@ -65,6 +66,73 @@ class AudioOnlyOutputEngine(
             11025 -> 10; 8000 -> 11; 7350 -> 12
             else -> 3 // Default 48000 Hz
         }
+
+        /**
+         * Downmixes 16-bit PCM audio of arbitrary channel count (e.g. 5.1 surround or mono) to stereo (2 channels).
+         */
+        fun downmixToStereo(pcmBytes: ByteArray, inputChannels: Int): ByteArray {
+            if (inputChannels == 2 || inputChannels <= 0 || pcmBytes.isEmpty()) return pcmBytes
+            val bytesPerSample = 2 // 16-bit PCM
+            val inputFrameSize = inputChannels * bytesPerSample
+            val totalFrames = pcmBytes.size / inputFrameSize
+            if (totalFrames <= 0) return pcmBytes
+
+            val outputBytes = ByteArray(totalFrames * 2 * bytesPerSample)
+            var inOffset = 0
+            var outOffset = 0
+
+            if (inputChannels == 1) {
+                // Mono to stereo: duplicate sample to both channels
+                for (f in 0 until totalFrames) {
+                    val b0 = pcmBytes[inOffset]
+                    val b1 = pcmBytes[inOffset + 1]
+                    inOffset += 2
+
+                    outputBytes[outOffset] = b0
+                    outputBytes[outOffset + 1] = b1
+                    outputBytes[outOffset + 2] = b0
+                    outputBytes[outOffset + 3] = b1
+                    outOffset += 4
+                }
+            } else if (inputChannels >= 6) {
+                // 5.1 surround sound: Left, Right, Center, LFE, Left Surround, Right Surround (ITU-R BS.775)
+                for (f in 0 until totalFrames) {
+                    val l = (pcmBytes[inOffset].toInt() and 0xFF) or (pcmBytes[inOffset + 1].toInt() shl 8)
+                    val r = (pcmBytes[inOffset + 2].toInt() and 0xFF) or (pcmBytes[inOffset + 3].toInt() shl 8)
+                    val c = (pcmBytes[inOffset + 4].toInt() and 0xFF) or (pcmBytes[inOffset + 5].toInt() shl 8)
+                    val ls = (pcmBytes[inOffset + 8].toInt() and 0xFF) or (pcmBytes[inOffset + 9].toInt() shl 8)
+                    val rs = (pcmBytes[inOffset + 10].toInt() and 0xFF) or (pcmBytes[inOffset + 11].toInt() shl 8)
+                    inOffset += inputFrameSize
+
+                    val lSample = l.toShort()
+                    val rSample = r.toShort()
+                    val cSample = c.toShort()
+                    val lsSample = ls.toShort()
+                    val rsSample = rs.toShort()
+
+                    val leftMixed = (lSample + 0.707f * cSample + 0.707f * lsSample).toInt().coerceIn(-32768, 32767)
+                    val rightMixed = (rSample + 0.707f * cSample + 0.707f * rsSample).toInt().coerceIn(-32768, 32767)
+
+                    outputBytes[outOffset] = (leftMixed and 0xFF).toByte()
+                    outputBytes[outOffset + 1] = ((leftMixed shr 8) and 0xFF).toByte()
+                    outputBytes[outOffset + 2] = (rightMixed and 0xFF).toByte()
+                    outputBytes[outOffset + 3] = ((rightMixed shr 8) and 0xFF).toByte()
+                    outOffset += 4
+                }
+            } else {
+                // Fallback for 3, 4, 5 channels: copy first 2 channels
+                for (f in 0 until totalFrames) {
+                    outputBytes[outOffset] = pcmBytes[inOffset]
+                    outputBytes[outOffset + 1] = pcmBytes[inOffset + 1]
+                    outputBytes[outOffset + 2] = pcmBytes[inOffset + 2]
+                    outputBytes[outOffset + 3] = pcmBytes[inOffset + 3]
+                    inOffset += inputFrameSize
+                    outOffset += 4
+                }
+            }
+
+            return outputBytes
+        }
     }
 
     private val isRunning = AtomicBoolean(false)
@@ -92,10 +160,11 @@ class AudioOnlyOutputEngine(
 
     @Synchronized
     fun updateFormat(newSampleRate: Int, newChannels: Int) {
-        if (newSampleRate == sampleRate && newChannels == channels && encoderCodec != null) {
+        if (newSampleRate == sampleRate && encoderCodec != null) {
+            channels = newChannels
             return
         }
-        AudioLog.i(TAG, "Reconfiguring AAC encoder: rate=$newSampleRate, channels=$newChannels")
+        AudioLog.i(TAG, "Reconfiguring AAC encoder: rate=$newSampleRate, input channels=$newChannels -> stereo output")
         sampleRate = newSampleRate
         channels = newChannels
 
@@ -111,7 +180,8 @@ class AudioOnlyOutputEngine(
     private fun initEncoder() {
         try {
             val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
+            // Always encode 2 channels (Stereo) for 100% Android TV hardware encoder support
+            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, OUTPUT_CHANNELS).apply {
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                 setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                 setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
@@ -119,7 +189,7 @@ class AudioOnlyOutputEngine(
             encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder.start()
             encoderCodec = encoder
-            AudioLog.i(TAG, "MediaCodec AAC Encoder successfully initialized: rate=$sampleRate, ch=$channels")
+            AudioLog.i(TAG, "MediaCodec AAC Encoder successfully initialized: rate=$sampleRate, stereo output")
         } catch (e: Throwable) {
             AudioLog.e(TAG, "Failed to initialize MediaCodec AAC encoder", e)
             encoderCodec = null
@@ -167,15 +237,16 @@ class AudioOnlyOutputEngine(
     }
 
     /**
-     * Ingests decoded raw PCM audio, encodes it to AAC ADTS using native MediaCodec,
-     * and broadcasts it to connected clients.
+     * Ingests decoded raw PCM audio, downmixes multi-channel audio (e.g. 5.1) to stereo,
+     * encodes it to AAC ADTS using native MediaCodec, and broadcasts it to connected clients.
      */
-    fun ingestPcm(pcmData: ByteArray, ptsUs: Long) {
+    fun ingestPcm(pcmData: ByteArray, ptsUs: Long, inputChannels: Int = channels) {
         if (!isRunning.get() || pcmData.isEmpty()) return
 
+        val stereoPcm = downmixToStereo(pcmData, inputChannels)
         val encoder = encoderCodec
         if (encoder != null) {
-            encodePcmWithMediaCodec(encoder, pcmData, ptsUs)
+            encodePcmWithMediaCodec(encoder, stereoPcm, ptsUs)
         } else {
             AudioLog.w(TAG, "Encoder codec is null; PCM data dropped")
             onError?.invoke(AudioErrorCode.AAC_ENCODER_ERROR, "مشفر AAC غير متاح")
@@ -223,7 +294,7 @@ class AudioOnlyOutputEngine(
                     outBuf.position(bufferInfo.offset)
                     outBuf.get(rawAac, 0, bufferInfo.size)
 
-                    val adtsFrame = addAdtsHeader(rawAac, sampleRate, channels)
+                    val adtsFrame = addAdtsHeader(rawAac, sampleRate, OUTPUT_CHANNELS)
                     broadcastFrame(adtsFrame)
                 }
 

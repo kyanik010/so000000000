@@ -92,7 +92,7 @@ class AudioSessionManager {
 
         decoderEngine = AudioDecoderEngine(
             onPcmDecoded = { pcmBytes, sampleRate, channels, ptsUs ->
-                outputEngine.ingestPcm(pcmBytes, ptsUs)
+                outputEngine.ingestPcm(pcmBytes, ptsUs, channels)
             },
             onFormatDiscovered = { sampleRate, channels, mimeType ->
                 outputEngine.updateFormat(sampleRate, channels)

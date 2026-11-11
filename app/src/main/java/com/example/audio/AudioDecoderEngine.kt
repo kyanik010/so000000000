@@ -113,7 +113,11 @@ class AudioDecoderEngine(
 
                 val isTs = buffer.isNotEmpty() && buffer[0] == TsAudioDemuxer.TS_SYNC_BYTE
                 if (isTs) {
-                    demuxer.processTsData(buffer, bytesRead)
+                    try {
+                        demuxer.processTsData(buffer, bytesRead)
+                    } catch (e: Exception) {
+                        AudioLog.w(TAG, "Non-fatal TS demux error in chunk: ${e.message}")
+                    }
                 } else {
                     // Raw audio stream (e.g. direct AAC ADTS or MP3)
                     val rawFrames: List<ExtractedAudioFrame> = extractRawAdtsFrames(buffer, bytesRead, detectedSampleRate, detectedChannels)
@@ -137,10 +141,27 @@ class AudioDecoderEngine(
 
         } catch (e: InterruptedException) {
             // Normal cancellation
+        } catch (e: java.net.SocketTimeoutException) {
+            if (isRunning.get()) {
+                AudioLog.e(TAG, "Stream read socket timed out", e)
+                onError(AudioErrorCode.SOURCE_TIMEOUT, "انتهت مهلة استلام بيانات الصوت من الخادم")
+            }
+        } catch (e: java.io.IOException) {
+            if (isRunning.get()) {
+                AudioLog.e(TAG, "Network stream I/O error", e)
+                onError(AudioErrorCode.SOURCE_HTTP_ERROR, "انقطع اتصال البث الصوتي: ${e.message ?: "I/O Error"}")
+            }
+        } catch (e: MediaCodec.CodecException) {
+            if (isRunning.get()) {
+                AudioLog.e(TAG, "Hardware codec exception", e)
+                val diag = e.diagnosticInfo ?: (e.message ?: "خطأ في وحدة فك التشفير")
+                onError(AudioErrorCode.DECODER_OUTPUT_ERROR, "خطأ في وحدة فك التشفير ($diag)")
+            }
         } catch (e: Throwable) {
             if (isRunning.get()) {
-                AudioLog.e(TAG, "Decoding stream failed", e)
-                onError(AudioErrorCode.DECODER_OUTPUT_ERROR, e.message ?: "خطأ أثناء فك ترميز الصوت")
+                AudioLog.e(TAG, "Decoding stream failed: ${e.javaClass.simpleName} - ${e.message}", e)
+                val detail = e.message ?: e.javaClass.simpleName
+                onError(AudioErrorCode.DECODER_OUTPUT_ERROR, "خطأ أثناء فك ترميز الصوت ($detail)")
             }
         } finally {
             try {
@@ -154,7 +175,17 @@ class AudioDecoderEngine(
     private fun createAndStartDecoder(mimeType: String, sampleRate: Int, channels: Int): MediaCodec? {
         return try {
             val codec = MediaCodec.createDecoderByType(mimeType)
-            val format = MediaFormat.createAudioFormat(mimeType, sampleRate, channels)
+            val format = MediaFormat.createAudioFormat(mimeType, sampleRate, channels).apply {
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 65536)
+                if (mimeType == "audio/mp4a-latm") {
+                    // Set 2-byte AudioSpecificConfig (AAC-LC) for optimal decoder compatibility
+                    val freqIdx = getFreqIndex(sampleRate)
+                    val csd0 = ByteArray(2)
+                    csd0[0] = ((2 shl 3) or (freqIdx shr 1)).toByte()
+                    csd0[1] = (((freqIdx and 1) shl 7) or (channels shl 3)).toByte()
+                    setByteBuffer("csd-0", ByteBuffer.wrap(csd0))
+                }
+            }
             codec.configure(format, null, null, 0)
             codec.start()
             isHardwareCodec = try {
@@ -246,6 +277,13 @@ class AudioDecoderEngine(
     companion object {
         private const val TAG = "SONIXAudioDecoder"
         private const val TIMEOUT_US = 10_000L
+
+        fun getFreqIndex(sampleRate: Int): Int = when (sampleRate) {
+            96000 -> 0; 88200 -> 1; 64000 -> 2; 48000 -> 3; 44100 -> 4
+            32000 -> 5; 24000 -> 6; 22050 -> 7; 16000 -> 8; 12000 -> 9
+            11025 -> 10; 8000 -> 11; 7350 -> 12
+            else -> 3
+        }
 
         /**
          * Extracts raw AAC ADTS frames from an arbitrary byte buffer.
