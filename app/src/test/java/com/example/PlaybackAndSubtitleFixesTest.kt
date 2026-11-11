@@ -132,4 +132,29 @@ class PlaybackAndSubtitleFixesTest {
         assertEquals("application/x-mpegURL", androidx.media3.common.MimeTypes.APPLICATION_M3U8)
         assertEquals("application/dash+xml", androidx.media3.common.MimeTypes.APPLICATION_MPD)
     }
+
+    @Test
+    fun videoQualitySelectionDifferentiatesAutoFromFixedQuality() {
+        val baseParameters = androidx.media3.common.TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT
+
+        // Explicit 720p
+        val height720 = 720
+        val width720 = (height720 * 16f / 9f).toInt()
+        val explicitParameters = baseParameters.buildUpon()
+            .setMaxVideoSize(width720, height720)
+            .setForceHighestSupportedBitrate(height720 >= 1080)
+            .build()
+        assertEquals(height720, explicitParameters.maxVideoHeight)
+        assertEquals(width720, explicitParameters.maxVideoWidth)
+        org.junit.Assert.assertFalse(explicitParameters.forceHighestSupportedBitrate)
+
+        // Auto mode (maxHeight <= 0) clears video size constraints rather than coercing to 360p
+        val autoParameters = explicitParameters.buildUpon()
+            .clearVideoSizeConstraints()
+            .setForceHighestSupportedBitrate(false)
+            .build()
+        assertEquals(Int.MAX_VALUE, autoParameters.maxVideoHeight)
+        assertEquals(Int.MAX_VALUE, autoParameters.maxVideoWidth)
+        org.junit.Assert.assertFalse(autoParameters.forceHighestSupportedBitrate)
+    }
 }

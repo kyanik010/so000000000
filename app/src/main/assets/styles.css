@@ -4528,9 +4528,13 @@ html.perf-tier-performance .modal-backdrop {
 }
 
 html.perf-tier-performance .modal-window,
+html.perf-tier-performance .home-toolbar,
 html.perf-tier-performance .top-toolbar,
+html.perf-tier-performance .live-sidebar,
 html.perf-tier-performance .sidebar,
+html.perf-tier-performance .live-player-col,
 html.perf-tier-performance .player-panel,
+html.perf-tier-performance .sonix-preview-panel,
 html.perf-tier-performance .dropdown-menu {
   background: #0f172a !important;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4) !important;
@@ -4539,6 +4543,12 @@ html.perf-tier-performance .dropdown-menu {
 
 html.perf-tier-performance .content-card,
 html.perf-tier-performance .channel-item,
+html.perf-tier-performance .channel-row,
+html.perf-tier-performance .category-item,
+html.perf-tier-performance .hero-card,
+html.perf-tier-performance .user-card,
+html.perf-tier-performance .preview-channel-card,
+html.perf-tier-performance .preview-vod-card,
 html.perf-tier-performance .vod-card {
   box-shadow: none !important;
   transition: border-color 0.1s ease, background-color 0.1s ease !important;
@@ -4547,6 +4557,13 @@ html.perf-tier-performance .vod-card {
 
 html.perf-tier-performance .focusable:focus,
 html.perf-tier-performance .channel-item.focused,
+html.perf-tier-performance .channel-row:focus,
+html.perf-tier-performance .channel-row.focused,
+html.perf-tier-performance .category-item:focus,
+html.perf-tier-performance .category-item.focused,
+html.perf-tier-performance .hero-card:focus,
+html.perf-tier-performance .hero-card.focused,
+html.perf-tier-performance .user-card:focus,
 html.perf-tier-performance .vod-card.focused {
   outline: 2px solid #38bdf8 !important;
   outline-offset: 2px !important;
@@ -4556,8 +4573,11 @@ html.perf-tier-performance .vod-card.focused {
 
 /* 2. BALANCED TIER (Standard Mid-Tier Hardware) */
 html.perf-tier-balanced .modal-window,
+html.perf-tier-balanced .home-toolbar,
 html.perf-tier-balanced .top-toolbar,
-html.perf-tier-balanced .sidebar {
+html.perf-tier-balanced .live-sidebar,
+html.perf-tier-balanced .sidebar,
+html.perf-tier-balanced .sonix-preview-panel {
   backdrop-filter: blur(6px) !important;
   -webkit-backdrop-filter: blur(6px) !important;
   box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5) !important;
@@ -4565,12 +4585,23 @@ html.perf-tier-balanced .sidebar {
 
 html.perf-tier-balanced .content-card,
 html.perf-tier-balanced .channel-item,
+html.perf-tier-balanced .channel-row,
+html.perf-tier-balanced .category-item,
+html.perf-tier-balanced .hero-card,
+html.perf-tier-balanced .user-card,
 html.perf-tier-balanced .vod-card {
   transition: transform 0.18s ease, border-color 0.18s ease !important;
 }
 
 html.perf-tier-balanced .focusable:focus,
 html.perf-tier-balanced .channel-item.focused,
+html.perf-tier-balanced .channel-row:focus,
+html.perf-tier-balanced .channel-row.focused,
+html.perf-tier-balanced .category-item:focus,
+html.perf-tier-balanced .category-item.focused,
+html.perf-tier-balanced .hero-card:focus,
+html.perf-tier-balanced .hero-card.focused,
+html.perf-tier-balanced .user-card:focus,
 html.perf-tier-balanced .vod-card.focused {
   outline: 2px solid #38bdf8 !important;
   transform: scale(1.02) !important;
@@ -4578,8 +4609,11 @@ html.perf-tier-balanced .vod-card.focused {
 
 /* 3. PREMIUM TIER (Cinematic Full Effects / High-End Devices) */
 html.perf-tier-premium .modal-window,
+html.perf-tier-premium .home-toolbar,
 html.perf-tier-premium .top-toolbar,
-html.perf-tier-premium .sidebar {
+html.perf-tier-premium .live-sidebar,
+html.perf-tier-premium .sidebar,
+html.perf-tier-premium .sonix-preview-panel {
   backdrop-filter: blur(16px) !important;
   -webkit-backdrop-filter: blur(16px) !important;
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 25px rgba(56, 189, 248, 0.15) !important;
@@ -4587,6 +4621,13 @@ html.perf-tier-premium .sidebar {
 
 html.perf-tier-premium .focusable:focus,
 html.perf-tier-premium .channel-item.focused,
+html.perf-tier-premium .channel-row:focus,
+html.perf-tier-premium .channel-row.focused,
+html.perf-tier-premium .category-item:focus,
+html.perf-tier-premium .category-item.focused,
+html.perf-tier-premium .hero-card:focus,
+html.perf-tier-premium .hero-card.focused,
+html.perf-tier-premium .user-card:focus,
 html.perf-tier-premium .vod-card.focused {
   outline: 2px solid #38bdf8 !important;
   outline-offset: 3px !important;

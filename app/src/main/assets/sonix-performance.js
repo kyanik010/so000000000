@@ -7,21 +7,41 @@
 
   var currentMode = 'smart';
   var currentTier = 'balanced';
+  var isDynamicallyThrottled = false;
+  var throttleReason = '';
+  var isNativeConnected = false;
+  var isUpdatingFromNative = false;
   var imageObserver = null;
 
   var SonixPerformanceUI = {
     init: function() {
+      this.checkNativeBridge();
       this.fetchInitialState();
       this.bindSettingsEvents();
+      this.setupGlobalCallback();
       this.setupLazyLoading();
       this.measureStartup();
     },
 
+    checkNativeBridge: function() {
+      isNativeConnected = !!(window.SonixPerformance &&
+        (typeof window.SonixPerformance.isConnected === 'function' ? window.SonixPerformance.isConnected() : typeof window.SonixPerformance.getPerformanceMode === 'function'));
+    },
+
     fetchInitialState: function() {
+      this.checkNativeBridge();
       try {
-        if (window.SonixPerformance && typeof window.SonixPerformance.getPerformanceMode === 'function') {
+        if (isNativeConnected) {
           currentMode = window.SonixPerformance.getPerformanceMode() || 'smart';
           currentTier = window.SonixPerformance.getPerformanceTier() || 'balanced';
+          try {
+            var specsJson = window.SonixPerformance.getDeviceSpecsJson();
+            if (specsJson) {
+              var specs = JSON.parse(specsJson);
+              isDynamicallyThrottled = !!specs.is_dynamically_throttled;
+              throttleReason = specs.throttle_reason || '';
+            }
+          } catch (_) {}
         } else {
           currentMode = localStorage.getItem('sonix_perf_mode') || 'smart';
           currentTier = localStorage.getItem('sonix_perf_tier') || 'balanced';
@@ -61,11 +81,23 @@
         premium: '🎬 سينمائي كامل (مؤثرات فائقة)'
       };
 
-      badge.textContent = tierLabels[tierName] || tierName;
+      var baseLabel = tierLabels[tierName] || tierName;
+      if (isDynamicallyThrottled && throttleReason) {
+        baseLabel += ' [مخفض مؤقتاً: ' + throttleReason + ']';
+      }
+      if (!isNativeConnected) {
+        baseLabel += ' (وضع محلي احتياطي)';
+      }
+
+      badge.textContent = baseLabel;
 
       if (desc) {
-        if (currentMode === 'smart') {
-          desc.textContent = 'تلقائي ذكي (Smart) - المستوى النشط: ' + (tierLabels[tierName] || tierName);
+        if (!isNativeConnected) {
+          desc.textContent = 'الوضع المحلي (الجسر غير متاح) - المستوى: ' + (tierLabels[tierName] || tierName);
+        } else if (currentMode === 'smart') {
+          desc.textContent = isDynamicallyThrottled
+            ? 'تلقائي ذكي (Smart) - تم تخفيض الأداء مؤقتاً بسبب ضغط الذاكرة'
+            : 'تلقائي ذكي (Smart) - المستوى النشط: ' + (tierLabels[tierName] || tierName);
         } else {
           desc.textContent = 'اختيار يدوي محدد: ' + (tierLabels[tierName] || tierName);
         }
@@ -74,8 +106,10 @@
 
     updateSettingsUi: function(mode, tier) {
       var select = document.getElementById('settings-performance-mode');
-      if (select) {
+      if (select && select.value !== mode) {
+        isUpdatingFromNative = true;
         select.value = mode;
+        isUpdatingFromNative = false;
       }
       this.updateBadges(tier);
     },
@@ -86,14 +120,19 @@
       if (!select) return;
 
       select.addEventListener('change', function(e) {
+        if (isUpdatingFromNative) return;
         var newMode = e.target.value;
         currentMode = newMode;
+        isDynamicallyThrottled = false;
+        throttleReason = '';
+
         try {
           localStorage.setItem('sonix_perf_mode', newMode);
         } catch (_) {}
 
         var newTier = 'balanced';
-        if (window.SonixPerformance && typeof window.SonixPerformance.setPerformanceMode === 'function') {
+        self.checkNativeBridge();
+        if (isNativeConnected && typeof window.SonixPerformance.setPerformanceMode === 'function') {
           newTier = window.SonixPerformance.setPerformanceMode(newMode);
         } else {
           if (newMode === 'performance') newTier = 'performance';
@@ -108,6 +147,18 @@
           showToast('تم حفظ وضع الأداء: ' + select.options[select.selectedIndex].text);
         }
       });
+    },
+
+    setupGlobalCallback: function() {
+      var self = this;
+      window.onSonixTierChanged = function(tierName, modeName, isThrottled, reason) {
+        isNativeConnected = true;
+        currentMode = modeName || currentMode;
+        isDynamicallyThrottled = !!isThrottled;
+        throttleReason = reason || '';
+        self.applyTier(tierName);
+        self.updateSettingsUi(currentMode, tierName);
+      };
     },
 
     setupLazyLoading: function() {

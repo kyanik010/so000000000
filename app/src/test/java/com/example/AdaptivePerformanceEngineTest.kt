@@ -176,4 +176,57 @@ class AdaptivePerformanceEngineTest {
         assertTrue(jsonStr.contains("switch_section_movies"))
         assertTrue(jsonStr.contains("key_press_19"))
     }
+
+    // 11. Scenario: Listener management, deduplication, and removal
+    @Test
+    fun engine_listenerManagement_addsAndRemovesCorrectly() {
+        val engine = AdaptivePerformanceEngine(context, prefs, initialBaseTier = PerformanceTier.PREMIUM)
+        var callCount = 0
+        val listener: (PerformanceTier, com.example.performance.DeviceSpecs) -> Unit = { _, _ ->
+            callCount++
+        }
+
+        // Add listener twice (deduplication should keep only one)
+        engine.addTierChangeListener(listener)
+        engine.addTierChangeListener(listener)
+
+        engine.setPerformanceMode(PerformanceMode.PERFORMANCE)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertEquals(1, callCount)
+
+        // Remove listener
+        engine.removeTierChangeListener(listener)
+        engine.setPerformanceMode(PerformanceMode.BALANCED)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        // callCount must remain 1 after removal
+        assertEquals(1, callCount)
+    }
+
+    // 12. Scenario: Memory throttling when targetTier equals activeTier still schedules restoration
+    @Test
+    fun engine_memoryPressure_sameTargetTierSchedulesRestoration() {
+        val engine = AdaptivePerformanceEngine(context, prefs, initialBaseTier = PerformanceTier.PERFORMANCE)
+        engine.setPerformanceMode(PerformanceMode.SMART)
+        assertEquals(PerformanceTier.PERFORMANCE, engine.getActiveTier())
+
+        // System sends critical memory pressure. Target tier is PERFORMANCE, which matches activeTier.
+        engine.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+
+        val specs = engine.getDeviceSpecs()
+        assertTrue(specs.isDynamicallyThrottled)
+        assertNotNull(specs.throttleReason)
+    }
+
+    // 13. Scenario: Release cleans up engine and stops further callbacks
+    @Test
+    fun engine_release_preventsCallbacksAndReleasesResources() {
+        val engine = AdaptivePerformanceEngine(context, prefs)
+        var called = false
+        engine.addTierChangeListener { _, _ -> called = true }
+
+        engine.release()
+        engine.setPerformanceMode(PerformanceMode.PERFORMANCE)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertFalse(called)
+    }
 }

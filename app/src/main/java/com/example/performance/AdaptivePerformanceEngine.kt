@@ -37,6 +37,9 @@ class AdaptivePerformanceEngine(
     private var throttleReason: String? = null
     private var lastAdjustmentTime: Long = 0L
 
+    private var restorationRunnable: Runnable? = null
+    @Volatile private var isReleased: Boolean = false
+
     private val tierChangeListeners = mutableListOf<(PerformanceTier, DeviceSpecs) -> Unit>()
 
     init {
@@ -88,12 +91,14 @@ class AdaptivePerformanceEngine(
 
     @Synchronized
     fun setPerformanceMode(mode: PerformanceMode) {
+        if (isReleased) return
         if (currentMode == mode) return
 
         currentMode = mode
         prefs.edit().putString(KEY_PERF_MODE, mode.modeName).apply()
 
-        // Clear dynamic throttling when mode is updated manually
+        // Clear dynamic throttling and cancel any pending restoration when mode is updated manually
+        cancelRestorationCheck()
         isDynamicallyThrottled = false
         throttleReason = null
 
@@ -114,10 +119,31 @@ class AdaptivePerformanceEngine(
 
     /**
      * Add a listener to observe changes in the active performance tier.
+     * Prevents duplicate registration of the exact same listener reference.
      */
     fun addTierChangeListener(listener: (PerformanceTier, DeviceSpecs) -> Unit) {
         synchronized(tierChangeListeners) {
-            tierChangeListeners.add(listener)
+            if (!isReleased && !tierChangeListeners.contains(listener)) {
+                tierChangeListeners.add(listener)
+            }
+        }
+    }
+
+    /**
+     * Remove a previously registered tier change listener to prevent leaks.
+     */
+    fun removeTierChangeListener(listener: (PerformanceTier, DeviceSpecs) -> Unit) {
+        synchronized(tierChangeListeners) {
+            tierChangeListeners.remove(listener)
+        }
+    }
+
+    /**
+     * Remove all registered listeners.
+     */
+    fun clearTierChangeListeners() {
+        synchronized(tierChangeListeners) {
+            tierChangeListeners.clear()
         }
     }
 
@@ -125,7 +151,9 @@ class AdaptivePerformanceEngine(
      * Called when the system detects memory pressure.
      * Only adapts if current mode is SMART. Respects user manual selection.
      */
+    @Synchronized
     override fun onTrimMemory(level: Int) {
+        if (isReleased) return
         if (currentMode != PerformanceMode.SMART) {
             // Respect manual choice, do not alter
             return
@@ -163,8 +191,10 @@ class AdaptivePerformanceEngine(
                     "Adaptive Performance Throttle applied: $previousTier -> $activeTier ($throttleReason)"
                 )
                 notifyTierChanged()
-                scheduleRestorationCheck()
             }
+            // Always schedule or reschedule restoration check when memory pressure throttles,
+            // even if targetTier matches current activeTier (ensures recovery once memory stabilizes).
+            scheduleRestorationCheck()
         }
     }
 
@@ -174,15 +204,29 @@ class AdaptivePerformanceEngine(
         onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
     }
 
+    @Synchronized
     private fun scheduleRestorationCheck() {
-        mainHandler.postDelayed({
+        if (isReleased) return
+        cancelRestorationCheck()
+        val runnable = Runnable {
             checkAndRestoreTier()
-        }, RESTORE_STABILIZATION_MS)
+        }
+        restorationRunnable = runnable
+        mainHandler.postDelayed(runnable, RESTORE_STABILIZATION_MS)
+    }
+
+    @Synchronized
+    private fun cancelRestorationCheck() {
+        restorationRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            restorationRunnable = null
+        }
     }
 
     @Synchronized
     private fun checkAndRestoreTier() {
-        if (!isDynamicallyThrottled || currentMode != PerformanceMode.SMART) return
+        restorationRunnable = null
+        if (isReleased || !isDynamicallyThrottled || currentMode != PerformanceMode.SMART) return
 
         val memInfo = DeviceCapabilityDetector.getMemoryInfo(context)
         if (!memInfo.lowMemory && (memInfo.availMem > memInfo.threshold * 1.5)) {
@@ -198,11 +242,35 @@ class AdaptivePerformanceEngine(
     }
 
     private fun notifyTierChanged() {
+        if (isReleased) return
+        val currentTier = activeTier
         val specs = getDeviceSpecs()
         mainHandler.post {
-            synchronized(tierChangeListeners) {
-                tierChangeListeners.forEach { it(activeTier, specs) }
+            if (isReleased) return@post
+            val listenersCopy = synchronized(tierChangeListeners) {
+                tierChangeListeners.toList()
+            }
+            listenersCopy.forEach { listener ->
+                try {
+                    listener(currentTier, specs)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error invoking tier change listener: ${e.message}", e)
+                }
             }
         }
+    }
+
+    /**
+     * Release engine resources, unregister callbacks, and cancel pending handlers.
+     */
+    @Synchronized
+    fun release() {
+        isReleased = true
+        cancelRestorationCheck()
+        clearTierChangeListeners()
+        try {
+            context.unregisterComponentCallbacks(this)
+        } catch (_: Exception) {}
+        Log.i(TAG, "SONIX Adaptive Performance Engine released.")
     }
 }

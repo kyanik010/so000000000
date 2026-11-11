@@ -37,6 +37,10 @@ import android.view.LayoutInflater
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.CaptionStyleCompat
+import com.example.performance.AdaptivePerformanceEngine
+import com.example.performance.PerformanceBridge
+import com.example.performance.PerformanceTier
+import com.example.performance.DeviceSpecs
 import android.widget.FrameLayout
 import androidx.media3.common.C
 import androidx.media3.common.text.Cue
@@ -394,6 +398,8 @@ class MainActivity : ComponentActivity() {
     private var nativeVideoMuted = false
     private lateinit var xtreamBridge: XtreamBridge
     private lateinit var sonixControlClient: SonixControlClient
+    private lateinit var performanceEngine: AdaptivePerformanceEngine
+    private var performanceTierListener: ((PerformanceTier, DeviceSpecs) -> Unit)? = null
     @Volatile private var sonixControlPageReady = false
     @Volatile private var webTextInputFocused = false
 
@@ -405,6 +411,10 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         try {
+            performanceEngine = AdaptivePerformanceEngine(applicationContext)
+            registerComponentCallbacks(performanceEngine)
+            val performanceBridge = PerformanceBridge(performanceEngine)
+
             xtreamBridge = XtreamBridge(this)
             sonixControlClient = SonixControlClient(this)
             if (xtreamBridge.hasSavedCredentials()) CatalogRefreshScheduler.ensureScheduled(this)
@@ -468,7 +478,23 @@ class MainActivity : ComponentActivity() {
                 addJavascriptInterface(xtreamBridge, "XtreamBridge")
                 addJavascriptInterface(SonixControlBridge(), "SonixControlBridge")
                 addJavascriptInterface(NativePlaybackBridge(), "NativePlayback")
+                addJavascriptInterface(performanceBridge, "SonixPerformance")
             }
+
+            val listener: (PerformanceTier, DeviceSpecs) -> Unit = { activeTier, specs ->
+                val tierName = activeTier.tierName
+                val modeName = specs.activeMode.modeName
+                val isThrottled = specs.isDynamicallyThrottled
+                val throttleReason = JSONObject.quote(specs.throttleReason ?: "")
+                wv.post {
+                    wv.evaluateJavascript(
+                        "window.onSonixTierChanged && window.onSonixTierChanged('$tierName', '$modeName', $isThrottled, $throttleReason)",
+                        null
+                    )
+                }
+            }
+            performanceTierListener = listener
+            performanceEngine.addTierChangeListener(listener)
 
             sonixControlClient.onSync = { result ->
                 val payload = JSONObject.quote(result.toString())
@@ -621,14 +647,26 @@ class MainActivity : ComponentActivity() {
                 val mediaSourceFactory = DefaultMediaSourceFactory(this@MainActivity)
                     .setDataSourceFactory(dataSourceFactory)
                 val sharedAllocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
+                val liveProfile = SonixPlaybackBufferProfiles.LIVE
                 val liveLoadControl = DefaultLoadControl.Builder()
                     .setAllocator(sharedAllocator)
-                    .setBufferDurationsMs(15000, 50000, 2500, 5000)
+                    .setBufferDurationsMs(
+                        liveProfile.minBufferMs,
+                        liveProfile.maxBufferMs,
+                        liveProfile.bufferForPlaybackMs,
+                        liveProfile.bufferForPlaybackAfterRebufferMs
+                    )
                     .setPrioritizeTimeOverSizeThresholds(true)
                     .build()
+                val vodProfile = SonixPlaybackBufferProfiles.VOD
                 val vodLoadControl = DefaultLoadControl.Builder()
                     .setAllocator(sharedAllocator)
-                    .setBufferDurationsMs(30000, 60000, 2500, 5000)
+                    .setBufferDurationsMs(
+                        vodProfile.minBufferMs,
+                        vodProfile.maxBufferMs,
+                        vodProfile.bufferForPlaybackMs,
+                        vodProfile.bufferForPlaybackAfterRebufferMs
+                    )
                     .setPrioritizeTimeOverSizeThresholds(true)
                     .build()
                 val dynamicLoadControl = DynamicLoadControl(
@@ -979,14 +1017,24 @@ class MainActivity : ComponentActivity() {
         fun setVideoQuality(maxHeight: Int) {
             runOnUiThread {
                 val player = nativePlayer ?: return@runOnUiThread
-                val height = maxHeight.coerceIn(360, 2160)
-                val width = (height * 16f / 9f).roundToInt()
-                player.trackSelectionParameters = player.trackSelectionParameters
-                    .buildUpon()
-                    .setMaxVideoSize(width, height)
-                    .setForceHighestSupportedBitrate(height >= 1080)
-                    .build()
-                android.util.Log.i("SONIXPlayback", "setVideoQuality: maxHeight=$height (maxVideoSize=${width}x$height, forceHighestBitrate=${height >= 1080})")
+                if (maxHeight <= 0) {
+                    // Auto mode: clear video size constraints and let Media3 choose automatically
+                    player.trackSelectionParameters = player.trackSelectionParameters
+                        .buildUpon()
+                        .clearVideoSizeConstraints()
+                        .setForceHighestSupportedBitrate(false)
+                        .build()
+                    android.util.Log.i("SONIXPlayback", "setVideoQuality: Auto (cleared video size constraints)")
+                } else {
+                    val height = maxHeight.coerceIn(360, 2160)
+                    val width = (height * 16f / 9f).roundToInt()
+                    player.trackSelectionParameters = player.trackSelectionParameters
+                        .buildUpon()
+                        .setMaxVideoSize(width, height)
+                        .setForceHighestSupportedBitrate(height >= 1080)
+                        .build()
+                    android.util.Log.i("SONIXPlayback", "setVideoQuality: maxHeight=$height (maxVideoSize=${width}x$height, forceHighestBitrate=${height >= 1080})")
+                }
             }
         }
 
@@ -2272,6 +2320,12 @@ class MainActivity : ComponentActivity() {
         stopNativePlayer()
         if (::sonixControlClient.isInitialized) sonixControlClient.shutdown()
         if (::xtreamBridge.isInitialized) xtreamBridge.shutdown()
+        if (::performanceEngine.isInitialized) {
+            performanceTierListener?.let { performanceEngine.removeTierChangeListener(it) }
+            performanceTierListener = null
+            try { unregisterComponentCallbacks(performanceEngine) } catch (_: Exception) {}
+            performanceEngine.release()
+        }
         subtitleIoExecutor.shutdownNow()
         codecDiagnosticsExecutor.shutdownNow()
         webView?.destroy()

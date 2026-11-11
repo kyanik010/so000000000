@@ -13,6 +13,11 @@ class PerformanceBridge(
 ) {
 
     @JavascriptInterface
+    fun isConnected(): Boolean {
+        return true
+    }
+
+    @JavascriptInterface
     fun getPerformanceTier(): String {
         return engine.getActiveTier().tierName
     }
