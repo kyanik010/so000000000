@@ -1,18 +1,25 @@
 package com.example.audio
 
+import android.util.Log
+import com.example.CredentialSanitizer
 import java.io.InputStream
 import java.net.HttpURLConnection
-import java.net.URL
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Manages audio extraction sessions, ensuring single-session isolation,
- * thread-safe cleanup, and resource recycling.
+ * Manages audio extraction sessions, guaranteeing single-session isolation,
+ * thread-safe cleanup, prevention of race conditions, and strict progression
+ * of states (RESOURCE_READY is dispatched only after genuine AAC frames are ready).
  */
 class AudioSessionManager {
+
+    companion object {
+        private const val TAG = "SONIXAudioSession"
+    }
 
     private val sessionExecutor = Executors.newSingleThreadExecutor()
     private val activeSession = AtomicReference<ActiveSession?>(null)
@@ -24,115 +31,213 @@ class AudioSessionManager {
         val localAudioUrl: String,
         val outputEngine: AudioOnlyOutputEngine,
         val decoderEngine: AudioDecoderEngine,
-        val workerFuture: Future<*>,
-        var connection: HttpURLConnection? = null
+        @Volatile var workerFuture: Future<*>? = null,
+        @Volatile var connection: HttpURLConnection? = null,
+        val isReady: AtomicBoolean = AtomicBoolean(false),
+        val isCancelled: AtomicBoolean = AtomicBoolean(false)
     )
 
     fun startSession(
         streamId: String,
         sourceUrl: String,
-        onStateChange: (AudioExtractionState, String) -> Unit
+        onStateChange: (AudioExtractionState, String, AudioErrorCode?, String?) -> Unit
     ): String {
-        // Stop any existing session first
+        // Stop and recycle any existing session first
         stopCurrentSession()
 
         val sessionId = UUID.randomUUID().toString().take(8)
-        onStateChange(AudioExtractionState.STREAM_OPENING, "جارٍ الاتصال بمصدر القناة...")
+        val safeSourceLog = CredentialSanitizer.sanitizeUrl(sourceUrl)
+        AudioLog.i(TAG, "Starting audio session: id=$sessionId, streamId=$streamId, url=$safeSourceLog")
 
-        val outputEngine = AudioOnlyOutputEngine(sessionId = sessionId)
-        val localAudioUrl = outputEngine.start()
+        onStateChange(AudioExtractionState.STREAM_OPENING, "جارٍ الاتصال بمصدر القناة...", null, null)
 
-        val decoderEngine = AudioDecoderEngine(
-            onPcmDecoded = { pcmBytes, _, _, ptsUs ->
-                outputEngine.ingestPcm(pcmBytes, ptsUs)
+        lateinit var outputEngine: AudioOnlyOutputEngine
+        lateinit var decoderEngine: AudioDecoderEngine
+
+        outputEngine = AudioOnlyOutputEngine(
+            sessionId = sessionId,
+            sampleRate = 48000,
+            channels = 2,
+            onFirstFrameProduced = {
+                val current = activeSession.get()
+                if (current != null && current.sessionId == sessionId && !current.isCancelled.get()) {
+                    if (current.isReady.compareAndSet(false, true)) {
+                        AudioLog.i(TAG, "Audio resource is VERIFIED and READY for Media3 playback: port=${outputEngine.serverPort}")
+                        onStateChange(
+                            AudioExtractionState.OUTPUT_PRODUCING,
+                            "جارٍ إنتاج المورد الصوتي المستقل",
+                            null,
+                            null
+                        )
+                        onStateChange(
+                            AudioExtractionState.RESOURCE_READY,
+                            "المورد الصوتي المستقل جاهز للتشغيل",
+                            null,
+                            current.localAudioUrl
+                        )
+                    }
+                }
             },
-            onError = { error ->
-                onStateChange(AudioExtractionState.FAILED_DECODING, "خطأ أثناء فك ترميز الصوت: ${error.message}")
+            onError = { errCode, msg ->
+                val current = activeSession.get()
+                if (current != null && current.sessionId == sessionId && !current.isCancelled.get()) {
+                    AudioLog.e(TAG, "Output engine error: $errCode - $msg")
+                    onStateChange(AudioExtractionState.FAILED_OUTPUT, msg, errCode, null)
+                    stopCurrentSession()
+                }
             }
         )
 
-        val future = sessionExecutor.submit {
-            runExtractionPipeline(streamId, sourceUrl, decoderEngine, onStateChange)
-        }
+        val localAudioUrl = outputEngine.start()
 
+        decoderEngine = AudioDecoderEngine(
+            onPcmDecoded = { pcmBytes, sampleRate, channels, ptsUs ->
+                outputEngine.ingestPcm(pcmBytes, ptsUs)
+            },
+            onFormatDiscovered = { sampleRate, channels, mimeType ->
+                outputEngine.updateFormat(sampleRate, channels)
+            },
+            onError = { errCode, msg ->
+                val current = activeSession.get()
+                if (current != null && current.sessionId == sessionId && !current.isCancelled.get()) {
+                    AudioLog.e(TAG, "Decoder error: $errCode - $msg")
+                    onStateChange(AudioExtractionState.FAILED_DECODING, msg, errCode, null)
+                    stopCurrentSession()
+                }
+            }
+        )
+
+        // Store active session BEFORE submitting worker to eliminate race conditions
         val session = ActiveSession(
             sessionId = sessionId,
             streamId = streamId,
             sourceUrl = sourceUrl,
             localAudioUrl = localAudioUrl,
             outputEngine = outputEngine,
-            decoderEngine = decoderEngine,
-            workerFuture = future
+            decoderEngine = decoderEngine
         )
         activeSession.set(session)
 
-        onStateChange(AudioExtractionState.RESOURCE_READY, "المورد الصوتي المستقل جاهز للتشغيل")
+        val future = sessionExecutor.submit {
+            runExtractionPipeline(session, onStateChange)
+        }
+        session.workerFuture = future
+
         return localAudioUrl
     }
 
     private fun runExtractionPipeline(
-        streamId: String,
-        sourceUrl: String,
-        decoderEngine: AudioDecoderEngine,
-        onStateChange: (AudioExtractionState, String) -> Unit
+        session: ActiveSession,
+        onStateChange: (AudioExtractionState, String, AudioErrorCode?, String?) -> Unit
     ) {
-        var connection: HttpURLConnection? = null
+        var activeConnection: HttpURLConnection? = null
         try {
-            onStateChange(AudioExtractionState.STREAM_INSPECTED, "تم فحص المصدر وعزل مسار الفيديو")
-            onStateChange(AudioExtractionState.DECODING_PCM, "جارٍ فك ترميز الصوت إلى PCM")
+            if (session.isCancelled.get()) return
 
-            val url = URL(sourceUrl)
-            connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15000
-                readTimeout = 30000
-                setRequestProperty("User-Agent", "SONIX-TV/1.0 (Android TV)")
-                instanceFollowRedirects = true
-            }
+            onStateChange(AudioExtractionState.STREAM_OPENING, "جارٍ فتح المصدر والاتصال بالبث...", null, null)
 
-            activeSession.get()?.connection = connection
-
-            val responseCode = connection.responseCode
-            if (responseCode !in 200..299) {
-                onStateChange(AudioExtractionState.FAILED_GENERAL, "فشل الاتصال بالبث (HTTP $responseCode)")
+            // Inspect stream
+            val inspection = AudioStreamInspector.inspectStream(session.sourceUrl)
+            if (!inspection.isSupported) {
+                val err = inspection.errorCode ?: AudioErrorCode.SOURCE_HTTP_ERROR
+                val msg = inspection.errorMessage ?: "مصدر البث غير مدعوم"
+                onStateChange(AudioExtractionState.FAILED_INSPECTION, msg, err, null)
                 return
             }
 
-            val inputStream: InputStream = connection.inputStream
-            onStateChange(AudioExtractionState.OUTPUT_PRODUCING, "جارٍ إنتاج المورد الصوتي المستقل")
+            val targetUrl = inspection.hlsAudioOnlyUrl ?: session.sourceUrl
 
-            decoderEngine.processStream(inputStream)
+            // Open HTTP connection with automatic redirects and safe headers
+            activeConnection = AudioStreamInspector.openHttpConnectionWithRedirects(targetUrl)
+            session.connection = activeConnection
+
+            val responseCode = activeConnection.responseCode
+            if (responseCode !in 200..299) {
+                val err = if (responseCode in listOf(401, 403)) AudioErrorCode.SOURCE_AUTH_ERROR else AudioErrorCode.SOURCE_HTTP_ERROR
+                onStateChange(
+                    AudioExtractionState.FAILED_GENERAL,
+                    "فشل الاتصال بالبث (HTTP $responseCode)",
+                    err,
+                    null
+                )
+                return
+            }
+
+            if (session.isCancelled.get()) return
+
+            onStateChange(
+                AudioExtractionState.STREAM_INSPECTED,
+                "تم فحص المصدر وعزل مسار الفيديو",
+                null,
+                null
+            )
+            onStateChange(
+                AudioExtractionState.DECODING_PCM,
+                "جارٍ فك ترميز الصوت إلى PCM",
+                null,
+                null
+            )
+
+            val inputStream: InputStream = activeConnection.inputStream
+
+            // Process audio through the demuxing and decoding pipeline
+            session.decoderEngine.processStream(inputStream, inspection.audioMimeType)
+
         } catch (e: InterruptedException) {
-            // Cancelled cleanly
+            // Clean cancellation
+            AudioLog.i(TAG, "Audio session extraction cancelled")
         } catch (e: Throwable) {
-            onStateChange(AudioExtractionState.FAILED_GENERAL, "انقطع تدفق الصوت: ${e.message}")
+            if (!session.isCancelled.get()) {
+                val safeErr = CredentialSanitizer.sanitizeMessage(e.message)
+                AudioLog.e(TAG, "Pipeline error: $safeErr", e)
+                onStateChange(
+                    AudioExtractionState.FAILED_GENERAL,
+                    "انقطع تدفق الصوت: $safeErr",
+                    AudioErrorCode.SOURCE_TIMEOUT,
+                    null
+                )
+            }
         } finally {
-            try { connection?.disconnect() } catch (_: Exception) {}
+            try { activeConnection?.disconnect() } catch (_: Exception) {}
         }
     }
 
     fun stopCurrentSession() {
         val current = activeSession.getAndSet(null) ?: return
+        current.isCancelled.set(true)
+        AudioLog.i(TAG, "Stopping active audio session: ${current.sessionId}")
         try {
-            current.workerFuture.cancel(true)
+            current.workerFuture?.cancel(true)
             current.connection?.disconnect()
             current.decoderEngine.stop()
             current.outputEngine.stop()
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            AudioLog.w(TAG, "Error cleaning up session: ${e.message}")
+        }
     }
 
     fun getCurrentLocalAudioUrl(): String? = activeSession.get()?.localAudioUrl
+
+    fun isSessionReady(): Boolean = activeSession.get()?.isReady?.get() == true
 
     fun getSessionMetrics(): AudioEngineMetrics? {
         val session = activeSession.get() ?: return null
         val decMetrics = session.decoderEngine.getMetrics()
         val outMetrics = session.outputEngine.getMetrics()
         return AudioEngineMetrics(
+            sessionId = session.sessionId,
+            streamId = session.streamId,
             pcmBytesProduced = decMetrics.pcmBytesProduced,
             pcmSamplesDecoded = decMetrics.pcmSamplesDecoded,
             encodedFramesCount = outMetrics.encodedFramesCount,
             sampleRate = decMetrics.sampleRate,
             channelCount = decMetrics.channelCount,
-            audioCodec = decMetrics.audioCodec
+            audioCodec = decMetrics.audioCodec,
+            audioPid = decMetrics.audioPid,
+            videoPid = decMetrics.videoPid,
+            isHardwareAccelerated = decMetrics.isHardwareAccelerated,
+            localServerPort = outMetrics.localServerPort,
+            lastState = if (session.isReady.get()) AudioExtractionState.RESOURCE_READY else AudioExtractionState.DECODING_PCM
         )
     }
 

@@ -2,10 +2,14 @@ package com.example
 
 import com.example.audio.AudioChannelGroup
 import com.example.audio.AudioDecoderEngine
+import com.example.audio.AudioErrorCode
+import com.example.audio.AudioExtractionState
 import com.example.audio.AudioOnlyOutputEngine
+import com.example.audio.AudioSessionManager
 import com.example.audio.AudioSourceClassifier
 import com.example.audio.AudioStreamInspector
-import com.example.audio.SimpleTsAudioDemuxer
+import com.example.audio.ExtractedAudioFrame
+import com.example.audio.TsAudioDemuxer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -17,8 +21,10 @@ import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class AudioAddonEngineTest {
 
     // =========================================================================
@@ -62,7 +68,6 @@ class AudioAddonEngineTest {
 
     @Test
     fun classify_handlesDiacriticsAndSpaces() {
-        // Tashkeel, Alef variants, punctuation
         val test1 = AudioSourceClassifier.classify("بَيْنَ سْبُورْتْ   ١   عَالِيَةُ الدِّقَّةِ")
         assertEquals(AudioChannelGroup.BEIN_SPORTS, test1)
 
@@ -90,6 +95,23 @@ class AudioAddonEngineTest {
     }
 
     @Test
+    fun inspectHls_parsesMediaSegments() {
+        val mediaPlaylist = """
+            #EXTM3U
+            #EXT-X-TARGETDURATION:6
+            #EXTINF:6.0,
+            segment0.ts
+            #EXTINF:6.0,
+            segment1.ts
+        """.trimIndent()
+
+        val segments = AudioStreamInspector.parseHlsSegments(mediaPlaylist, "http://provider.tv/live/media.m3u8")
+        assertEquals(2, segments.size)
+        assertEquals("http://provider.tv/live/segment0.ts", segments[0])
+        assertEquals("http://provider.tv/live/segment1.ts", segments[1])
+    }
+
+    @Test
     fun inspect_rejectsUnsafeSchemes() {
         val fileResult = AudioStreamInspector.inspectStream("file:///sdcard/stream.ts")
         assertFalse(fileResult.isSupported)
@@ -100,76 +122,159 @@ class AudioAddonEngineTest {
     }
 
     // =========================================================================
-    // 3. Audio Decoding to PCM and Video Elimination Tests
+    // 3. MPEG-TS Demuxer, Audio PID Isolation, and PES Header Stripping
     // =========================================================================
-
-    @Test
-    fun decoder_demuxesTsAndProducesPcmBuffers() {
-        val pcmProduced = AtomicBoolean(false)
-        val totalPcmBytes = AtomicLong(0L)
-
-        val decoder = AudioDecoderEngine(
-            onPcmDecoded = { bytes, sampleRate, channels, _ ->
-                pcmProduced.set(true)
-                totalPcmBytes.addAndGet(bytes.size.toLong())
-                assertEquals(48000, sampleRate)
-                assertEquals(2, channels)
-                assertTrue("Decoded PCM chunk must not be empty", bytes.isNotEmpty())
-            },
-            onError = { err ->
-                throw AssertionError("Decoding failed: ${err.message}")
-            }
-        )
-
-        // Generate synthetic audio ADTS frames
-        val dummyAacPayload = ByteArray(128) { (it * 7).toByte() }
-        val dummyAdtsFrame = AudioOnlyOutputEngine.addAdtsHeader(dummyAacPayload, 48000, 2)
-
-        // Verify ADTS syncword (0xFFF1)
-        assertEquals(0xFF.toByte(), dummyAdtsFrame[0])
-        assertEquals(0xF1.toByte(), dummyAdtsFrame[1])
-
-        val inputStream = ByteArrayInputStream(dummyAdtsFrame + dummyAdtsFrame + dummyAdtsFrame)
-        decoder.processStream(inputStream)
-
-        assertTrue("PCM must be produced by audio decoder engine", pcmProduced.get())
-        assertTrue("PCM byte count must be positive", totalPcmBytes.get() > 0)
-        val metrics = decoder.getMetrics()
-        assertTrue("Metrics must reflect decoded samples", metrics.pcmSamplesDecoded > 0)
-    }
 
     @Test
     fun tsDemuxer_discardsVideoPidsEntirely() {
-        val demuxer = SimpleTsAudioDemuxer()
-        // Create synthetic TS packet with Video PID 0x0100 (256)
-        val videoPacket = ByteArray(188)
-        videoPacket[0] = 0x47.toByte() // Sync byte
-        videoPacket[1] = 0x01.toByte() // PID high bits (0x01)
-        videoPacket[2] = 0x00.toByte() // PID low bits (0x00) -> PID 256
-        videoPacket[3] = 0x10.toByte() // Payload only
+        var videoDiscarded = false
+        val demuxer = TsAudioDemuxer(
+            onFrameExtracted = {},
+            onVideoDiscovered = { pid, streamType ->
+                videoDiscarded = true
+                assertEquals(0x0100, pid)
+                assertEquals(0x1B, streamType) // H.264 video
+            }
+        )
 
-        val extracted = demuxer.extractAudioPayloads(videoPacket, 188)
-        assertTrue("Video PID packets must be completely discarded by audio demuxer", extracted.isEmpty())
+        // Build PMT with Video PID 0x0100 (Stream Type 0x1B)
+        val pmtPacket = ByteArray(188)
+        pmtPacket[0] = 0x47.toByte() // sync
+        pmtPacket[1] = 0x40.toByte() // PUSI + PID 0
+        pmtPacket[2] = 0x64.toByte() // PID 100 (PMT)
+        pmtPacket[3] = 0x10.toByte() // payload only
+        pmtPacket[4] = 0x00.toByte() // pointer field
+        pmtPacket[5] = 0x02.toByte() // table_id 2 (PMT)
+        pmtPacket[6] = 0xB0.toByte()
+        pmtPacket[7] = 0x17.toByte() // section length 23
+        // Program info length = 0
+        pmtPacket[15] = 0x00.toByte()
+        pmtPacket[16] = 0x00.toByte()
+        // ES 1: Video PID 0x0100, type 0x1B
+        pmtPacket[17] = 0x1B.toByte() // H.264
+        pmtPacket[18] = 0xE1.toByte() // PID 0x0100
+        pmtPacket[19] = 0x00.toByte()
+        pmtPacket[20] = 0xF0.toByte() // ES info length 0
+        pmtPacket[21] = 0x00.toByte()
+
+        // Set pmtPid manually to 100
+        val pmtPidField = TsAudioDemuxer::class.java.getDeclaredField("pmtPid")
+        pmtPidField.isAccessible = true
+        pmtPidField.set(demuxer, 100)
+
+        demuxer.processTsData(pmtPacket, 188)
+        assertTrue("Video stream must be discovered and marked for discarding", videoDiscarded)
+
+        // Send a video packet
+        val videoPacket = ByteArray(188)
+        videoPacket[0] = 0x47.toByte()
+        videoPacket[1] = 0x01.toByte()
+        videoPacket[2] = 0x00.toByte() // PID 0x0100
+        videoPacket[3] = 0x10.toByte()
+
+        var extractedAudioCount = 0
+        val demuxer2 = TsAudioDemuxer(
+            onFrameExtracted = { extractedAudioCount++ }
+        )
+        demuxer2.processTsData(videoPacket, 188)
+        assertEquals("Video packets must never produce audio frames", 0, extractedAudioCount)
+    }
+
+    @Test
+    fun tsDemuxer_stripsPesHeaderAndExtractsAdtsFrames() {
+        val extractedFrames = mutableListOf<ExtractedAudioFrame>()
+        val demuxer = TsAudioDemuxer(
+            onFrameExtracted = { extractedFrames.add(it) }
+        )
+
+        // Set audioPid to 200, MIME to audio/mp4a-latm
+        val audioPidField = TsAudioDemuxer::class.java.getDeclaredField("audioPid")
+        audioPidField.isAccessible = true
+        audioPidField.set(demuxer, 200)
+
+        // Create a valid 7-byte ADTS AAC frame
+        val rawAac = ByteArray(64) { 0x55.toByte() }
+        val validAdts = AudioOnlyOutputEngine.addAdtsHeader(rawAac, 48000, 2)
+
+        // Build a PES packet containing the ADTS frame:
+        // 00 00 01 C0 (audio stream 0), length, flags, header data length (PTS), then ES data
+        val pesHeader = byteArrayOf(
+            0x00, 0x00, 0x01, 0xC0.toByte(), // start code + stream_id
+            0x00, 0x50, // packet length
+            0x80.toByte(), 0x80.toByte(), // flags (PTS present: 0x80)
+            0x05, // header data length 5
+            0x21, 0x00, 0x01, 0x00, 0x01 // PTS data (33-bit)
+        )
+        val fullPes = pesHeader + validAdts
+
+        // Wrap into TS packets with PID 200 and PUSI = 1
+        val tsPacket1 = ByteArray(188)
+        tsPacket1[0] = 0x47.toByte()
+        tsPacket1[1] = 0x40.toByte() // PUSI = 1, PID upper bits = 0
+        tsPacket1[2] = 200.toByte() // PID = 200
+        tsPacket1[3] = 0x10.toByte() // payload only
+        System.arraycopy(fullPes, 0, tsPacket1, 4, fullPes.size.coerceAtMost(184))
+
+        // Next packet triggers flush
+        val tsPacket2 = ByteArray(188)
+        tsPacket2[0] = 0x47.toByte()
+        tsPacket2[1] = 0x40.toByte() // PUSI = 1 (triggers flush of packet 1)
+        tsPacket2[2] = 200.toByte()
+        tsPacket2[3] = 0x10.toByte()
+
+        demuxer.processTsData(tsPacket1 + tsPacket2, 376)
+
+        assertEquals("Should extract exactly 1 valid ADTS frame", 1, extractedFrames.size)
+        val frame = extractedFrames[0]
+        assertEquals(48000, frame.sampleRate)
+        assertEquals(2, frame.channelCount)
+        assertEquals("audio/mp4a-latm", frame.mimeType)
+        // Verify ADTS syncword on extracted data (0xFFF)
+        assertEquals(0xFF.toByte(), frame.data[0])
+        assertEquals(0xF0.toByte(), (frame.data[1].toInt() and 0xF0).toByte())
+        assertEquals(validAdts.size, frame.data.size)
     }
 
     // =========================================================================
-    // 4. Independent Audio Output and Loopback Server Tests
+    // 4. ADTS Header Creation and Parameter Integrity Tests
     // =========================================================================
 
     @Test
-    fun outputEngine_generatesPureAacAdtsStreamWithoutVideo() {
-        val outputEngine = AudioOnlyOutputEngine(sessionId = "test1234", sampleRate = 48000, channels = 2)
+    fun adtsHeader_encodesSampleRateAndChannelsCorrectly() {
+        val payload = ByteArray(100) { 0x11.toByte() }
+
+        // Test 48000 Hz (index 3), 2 channels
+        val frame48k = AudioOnlyOutputEngine.addAdtsHeader(payload, 48000, 2)
+        assertEquals(107, frame48k.size) // 100 + 7
+        assertEquals(0xFF.toByte(), frame48k[0])
+        assertEquals(0xF1.toByte(), frame48k[1])
+        // Profile LC (2) -> (2 - 1) shl 6 = 0x40; freqIdx 3 shl 2 = 0x0C; channels 2 shr 2 = 0
+        // byte 2 = 0x40 | 0x0C = 0x4C
+        assertEquals(0x4C.toByte(), frame48k[2])
+
+        // Test 44100 Hz (index 4), 1 channel
+        val frame44k = AudioOnlyOutputEngine.addAdtsHeader(payload, 44100, 1)
+        assertEquals(0x50.toByte(), frame44k[2]) // 0x40 | (4 shl 2) = 0x50
+    }
+
+    // =========================================================================
+    // 5. Independent Audio Output and Loopback Server Tests
+    // =========================================================================
+
+    @Test
+    fun outputEngine_streamsValidAdtsOverHttpLoopback() {
+        val outputEngine = AudioOnlyOutputEngine(sessionId = "srv123", sampleRate = 48000, channels = 2)
         val streamUrl = outputEngine.start()
 
         assertTrue(streamUrl.startsWith("http://127.0.0.1:"))
         assertTrue(streamUrl.endsWith(".aac"))
 
-        // Feed PCM chunks into output engine
-        val testPcm = ByteArray(4096) { (it % 127).toByte() }
-        outputEngine.ingestPcm(testPcm, ptsUs = 0L)
-        outputEngine.ingestPcm(testPcm, ptsUs = 21333L)
+        // Enqueue valid ADTS frame
+        val testPayload = ByteArray(120) { 0xAA.toByte() }
+        val testFrame = AudioOnlyOutputEngine.addAdtsHeader(testPayload, 48000, 2)
+        outputEngine.enqueueRawAdtsFrame(testFrame)
 
-        // Connect via HTTP client to verify pure audio/aac response
+        // Connect via HTTP client
         val url = URL(streamUrl)
         val connection = url.openConnection() as HttpURLConnection
         connection.connectTimeout = 3000
@@ -190,5 +295,30 @@ class AudioAddonEngineTest {
 
         connection.disconnect()
         outputEngine.stop()
+    }
+
+    // =========================================================================
+    // 6. Session Lifecycle and Clean Cancellation Tests
+    // =========================================================================
+
+    @Test
+    fun sessionManager_cleansUpOnStop() {
+        val sessionManager = AudioSessionManager()
+        val states = mutableListOf<AudioExtractionState>()
+
+        val localUrl = sessionManager.startSession(
+            streamId = "1001",
+            sourceUrl = "http://127.0.0.1:9999/test.ts"
+        ) { state, _, _, _ ->
+            states.add(state)
+        }
+
+        assertTrue("Initial state must be STREAM_OPENING", states.contains(AudioExtractionState.STREAM_OPENING))
+        assertFalse("Must NOT emit RESOURCE_READY before audio is verified", states.contains(AudioExtractionState.RESOURCE_READY))
+
+        // Stop session cleanly
+        sessionManager.stopCurrentSession()
+        assertFalse(sessionManager.isSessionReady())
+        sessionManager.shutdown()
     }
 }

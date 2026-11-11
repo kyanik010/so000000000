@@ -22,11 +22,12 @@ class AudioAddonManager(
     private val discoveredChannels = CopyOnWriteArrayList<AudioChannelInfo>()
     @Volatile private var isAddonActive = false
     @Volatile private var currentExtractionState = AudioExtractionState.IDLE
+    @Volatile private var lastErrorCode: AudioErrorCode? = null
 
     companion object {
         const val ADDON_ID = "com.sonix.addon.audio"
         const val ADDON_NAME = "SONIX AUDIO"
-        const val ADDON_VERSION = "1.0.0"
+        const val ADDON_VERSION = "1.1.0"
 
         @Volatile private var instance: AudioAddonManager? = null
 
@@ -45,6 +46,7 @@ class AudioAddonManager(
     fun onSessionActivated() {
         isAddonActive = true
         currentExtractionState = AudioExtractionState.IDLE
+        lastErrorCode = null
     }
 
     /**
@@ -53,6 +55,7 @@ class AudioAddonManager(
     fun onSessionTerminated() {
         isAddonActive = false
         currentExtractionState = AudioExtractionState.STOPPED
+        lastErrorCode = null
         discoveredChannels.clear()
         sessionManager.stopCurrentSession()
     }
@@ -99,43 +102,61 @@ class AudioAddonManager(
     /**
      * Requests independent audio extraction:
      * Resolves the real Xtream stream URL in native layer (never exposing password to JS),
-     * analyzes stream, decodes to PCM, eliminates video, and produces local loopback audio URI.
+     * analyzes stream, decodes to PCM, eliminates video, and produces verified local loopback audio URI.
+     */
+    fun startIndependentAudio(
+        streamId: String,
+        extension: String,
+        onStateChange: (state: AudioExtractionState, message: String, errorCode: AudioErrorCode?, localAudioUrl: String?) -> Unit
+    ): String {
+        currentExtractionState = AudioExtractionState.STREAM_OPENING
+        lastErrorCode = null
+        onStateChange(AudioExtractionState.STREAM_OPENING, "جارٍ تجهيز مسار الصوت المستقل...", null, null)
+
+        val playbackUri = try {
+            xtreamBridge.buildPlaybackUri("live", streamId, extension)
+        } catch (e: Exception) {
+            currentExtractionState = AudioExtractionState.FAILED_GENERAL
+            lastErrorCode = AudioErrorCode.SOURCE_AUTH_ERROR
+            onStateChange(AudioExtractionState.FAILED_GENERAL, "تعذر الحصول على رابط البث من الاشتراك: ${e.message}", lastErrorCode, null)
+            throw e
+        }
+
+        return sessionManager.startSession(
+            streamId = streamId,
+            sourceUrl = playbackUri.toString()
+        ) { state, message, errCode, url ->
+            currentExtractionState = state
+            lastErrorCode = errCode
+            onStateChange(state, message, errCode, url)
+        }
+    }
+
+    /**
+     * Backward compatible overload.
      */
     fun startIndependentAudio(
         streamId: String,
         extension: String,
         onStateChange: (AudioExtractionState, String) -> Unit
     ): String {
-        currentExtractionState = AudioExtractionState.STREAM_OPENING
-        onStateChange(AudioExtractionState.STREAM_OPENING, "جارٍ تجهيز مسار الصوت المستقل...")
-
-        val playbackUri = try {
-            xtreamBridge.buildPlaybackUri("live", streamId, extension)
-        } catch (e: Exception) {
-            currentExtractionState = AudioExtractionState.FAILED_GENERAL
-            onStateChange(AudioExtractionState.FAILED_GENERAL, "تعذر الحصول على رابط البث: ${e.message}")
-            throw e
-        }
-
-        val localUrl = sessionManager.startSession(
-            streamId = streamId,
-            sourceUrl = playbackUri.toString()
-        ) { state, message ->
-            currentExtractionState = state
+        return startIndependentAudio(streamId, extension) { state, message, _, _ ->
             onStateChange(state, message)
         }
-
-        return localUrl
     }
 
     fun stopIndependentAudio() {
         sessionManager.stopCurrentSession()
         currentExtractionState = AudioExtractionState.STOPPED
+        lastErrorCode = null
     }
 
     fun getMetrics(): AudioEngineMetrics {
         val base = sessionManager.getSessionMetrics() ?: AudioEngineMetrics()
-        return base.copy(lastState = currentExtractionState)
+        return base.copy(
+            lastState = currentExtractionState,
+            lastErrorCode = lastErrorCode
+        )
     }
 
     /**
@@ -154,6 +175,7 @@ class AudioAddonManager(
             .put("channelsCount", discoveredChannels.size)
             .put("currentState", currentExtractionState.code)
             .put("currentStateName", currentExtractionState.displayNameAr)
+            .put("lastErrorCode", lastErrorCode?.code ?: "")
             .toString()
     }
 

@@ -835,7 +835,7 @@
       }
       onBuffering() { if (this.isActive) this.setStatus('connecting', 'جارٍ الاتصال أو إعادة المحاولة...'); }
       onPlaying() { if (this.isActive) { this.setStatus('playing', 'يعمل'); showToast('بدأ تشغيل القناة الصوتية المستقلة عبر Media3'); } }
-      onFailure(message) { this.stopExternalAudio(false, false); this.setStatus('failed', 'فشل الاتصال'); showToast(message || 'فشل تشغيل مصدر الصوت الخارجي؛ تمت استعادة صوت الفيديو'); }
+      onFailure(message) { this.stopExternalAudio(false, false); this.setStatus('failed', message || 'فشل الاتصال'); showToast(message || 'فشل تشغيل مصدر الصوت الخارجي؛ تمت استعادة صوت الفيديو'); }
       stopExternalAudio(showMessage = true, notifyNative = true) {
         if (notifyNative && window.NativePlayback) window.NativePlayback.detachExternalAudio();
         this.isActive = false;
@@ -861,8 +861,10 @@
           const state = data.state || '';
           if (state.startsWith('failed')) {
             this.onFailure(msg);
-          } else if (state === 'decoding_pcm' || state === 'output_producing' || state === 'resource_ready') {
+          } else if (state === 'decoding_pcm' || state === 'output_producing') {
             this.setStatus('connecting', msg || 'فك ترميز PCM للمورد المستقل...');
+          } else if (state === 'resource_ready') {
+            this.setStatus('connecting', msg || 'المورد الصوتي جاهز؛ جارٍ التشغيل...');
           } else if (state === 'playing') {
             this.setStatus('playing', 'مورد صوتي مستقل يعمل');
           } else if (msg) {

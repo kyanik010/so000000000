@@ -1221,14 +1221,25 @@ class MainActivity : ComponentActivity() {
                         "اختر قناة صوتية مختلفة عن قناة الفيديو"
                     }
                     val addonManager = com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
-                    val independentAudioUrl = addonManager.startIndependentAudio(normalizedStreamId, extension) { state, message ->
+                    addonManager.startIndependentAudio(normalizedStreamId, extension) { state, message, errCode, readyUrl ->
                         runOnUiThread {
-                            val payload = JSONObject().put("state", state.code).put("message", message).toString()
+                            val payload = JSONObject()
+                                .put("state", state.code)
+                                .put("message", message)
+                                .put("errorCode", errCode?.code ?: "")
+                                .toString()
                             webView?.evaluateJavascript("window.onAudioAddonStateChanged && window.onAudioAddonStateChanged($payload)", null)
+
+                            if (state == com.example.audio.AudioExtractionState.RESOURCE_READY && !readyUrl.isNullOrBlank()) {
+                                attachExternalAudioInternal(readyUrl, compareWithVideo = false)
+                            } else if (state.name.startsWith("FAILED")) {
+                                detachExternalAudioInternal(false)
+                                val errText = if (errCode != null) "$message (${errCode.code})" else message
+                                val jsonMsg = JSONObject.quote(errText)
+                                webView?.evaluateJavascript("window.onExternalAudioError && window.onExternalAudioError($jsonMsg)", null)
+                            }
                         }
                     }
-                    // Attach the independent, video-free audio stream to the secondary player
-                    attachExternalAudioInternal(independentAudioUrl, compareWithVideo = false)
                 } catch (error: Exception) {
                     detachExternalAudioInternal(false)
                     val message = JSONObject.quote(error.message ?: "تعذر استخراج رابط القناة الصوتية من الاشتراك")
@@ -1333,12 +1344,6 @@ class MainActivity : ComponentActivity() {
         externalAudioRetryAttempt = 0
         externalAudioSourceUrl = url
         val generation = externalAudioGeneration
-        if (!externalAudioActive) {
-            nativePlayer?.let { primary ->
-                nativeVideoVolumeBeforeExternalAudio = primary.volume
-                primary.volume = 0f
-            }
-        }
         externalAudioActive = true
         webView?.evaluateJavascript("window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
         startExternalAudioAttempt(generation)
@@ -1378,6 +1383,15 @@ class MainActivity : ComponentActivity() {
                         externalAudioRetryRunnable = null
                         externalAudioRetryAttempt = 0
                         applyExternalAudioSyncOffset()
+
+                        // Mute original video only when secondary audio is confirmed STATE_READY
+                        if (!nativeVideoMuted) {
+                            nativePlayer?.let { primary ->
+                                nativeVideoVolumeBeforeExternalAudio = primary.volume
+                                primary.volume = 0f
+                            }
+                        }
+
                         webView?.evaluateJavascript(
                             "window.onExternalAudioPlaying && window.onExternalAudioPlaying()", null)
                     }
@@ -1388,6 +1402,10 @@ class MainActivity : ComponentActivity() {
             override fun onPlayerError(error: PlaybackException) {
                 if (generation != externalAudioGeneration || secondaryAudioPlayer !== audioPlayer) return
                 android.util.Log.w("SONIXExternalAudio", "External audio failed: ${error.errorCodeName}")
+                // Restore original video volume on secondary player error
+                if (!nativeVideoMuted) {
+                    nativePlayer?.volume = nativeVideoVolumeBeforeExternalAudio
+                }
                 scheduleExternalAudioRetry(generation)
             }
         })
