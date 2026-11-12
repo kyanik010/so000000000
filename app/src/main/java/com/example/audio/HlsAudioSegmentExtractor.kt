@@ -34,7 +34,7 @@ class HlsAudioSegmentExtractor(private val decoder: ExternalAudioMediaCodecDecod
             extractor.selectTrack(audioTrack)
             val declaredMax = if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
                 format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) else 0
-            val sampleBuffer = ByteBuffer.allocate(
+            val sampleBuffer = ByteBuffer.allocateDirect(
                 maxOf(256 * 1024, declaredMax).coerceAtMost(4 * 1024 * 1024)
             )
             while (true) {
