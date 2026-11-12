@@ -779,6 +779,17 @@
       }
       bindEvents() {
         document.getElementById('btn-start-audio').addEventListener('click', () => this.startExternalAudio());
+        const syncButton = document.getElementById('btn-sync-audio-m3u');
+        if (syncButton) syncButton.addEventListener('click', () => {
+          if (!window.SonixControlBridge || typeof window.SonixControlBridge.syncAudioSources !== 'function') {
+            showToast('خدمة مزامنة الصوت غير متاحة'); return;
+          }
+          syncButton.disabled = true;
+          syncButton.textContent = 'جارٍ مزامنة مصادر الصوت…';
+          const status = document.getElementById('audio-m3u-sync-status');
+          if (status) status.textContent = 'جارٍ جلب قائمة الصوت من لوحة SONIX';
+          window.SonixControlBridge.syncAudioSources();
+        });
         document.getElementById('btn-stop-audio').addEventListener('click', () => this.stopExternalAudio());
         document.getElementById('delay-plus-100').addEventListener('click', () => this.adjustDelay(100));
         document.getElementById('delay-minus-100').addEventListener('click', () => this.adjustDelay(-100));
@@ -812,9 +823,11 @@
           showToast('يرجى اختيار قناة صوتية من beIN SPORTS أو ALWAN أولاً');
           return;
         }
-        if (!window.NativePlayback || typeof window.NativePlayback.attachExternalAudioStream !== 'function') {
+        const canPlayM3uUrl = !!(source.url && window.NativePlayback && typeof window.NativePlayback.attachExternalAudio === 'function');
+        const canPlayXtreamId = !!(window.NativePlayback && typeof window.NativePlayback.attachExternalAudioStream === 'function');
+        if (!canPlayM3uUrl && !canPlayXtreamId) {
           this.setStatus('failed', 'مصدر الصوت غير متاح');
-          showToast('تعذر الحصول على رابط القناة الصوتية من الاشتراك');
+          showToast('تعذر الحصول على رابط القناة الصوتية من لوحة SONIX');
           return;
         }
         if (!this.isActive) this.originalVideoMuted = !!this.videoController.isMuted;
@@ -826,12 +839,9 @@
         this.btnExtAudioText.textContent = 'الصوت الخارجي: ' + source.name;
         window.NativePlayback.setExternalAudioVolume(this.volume);
         window.NativePlayback.setExternalAudioSyncOffset(this.delayMs);
-        // Pass the real provider stream ID to the native secondary Media3 player.
-        // Never overwrite channel.streamUrl with the shared native://stream placeholder.
-        window.NativePlayback.attachExternalAudioStream(
-          String(source.id),
-          source.containerExtension || 'ts'
-        );
+        // M3U channel URLs are played directly by the existing secondary Media3 player.
+        if (source.url) window.NativePlayback.attachExternalAudio(String(source.url));
+        else window.NativePlayback.attachExternalAudioStream(String(source.id), source.containerExtension || 'ts');
       }
       onBuffering() { if (this.isActive) this.setStatus('connecting', 'جارٍ الاتصال أو إعادة المحاولة...'); }
       onPlaying() { if (this.isActive) { this.setStatus('playing', 'يعمل'); showToast('بدأ تشغيل القناة الصوتية المستقلة عبر Media3'); } }
@@ -877,6 +887,22 @@
       releaseAll() { this.stopExternalAudio(false); }
     }
     window.onAudioAddonStateChanged = function(data) { if (dualAudioEngine) dualAudioEngine.onAddonState(data); };
+    window.onAudioM3uSynced = function(payload) {
+      const button = document.getElementById('btn-sync-audio-m3u');
+      const status = document.getElementById('audio-m3u-sync-status');
+      if (button) { button.disabled = false; button.textContent = 'اضغط هنا لمزامنة مصادر الصوت'; }
+      if (!payload || !payload.success) {
+        if (status) status.textContent = (payload && payload.error) || 'تعذرت مزامنة مصادر الصوت';
+        if (payload && payload.error) showToast(payload.error);
+        return;
+      }
+      audioSourceChannels = Array.isArray(payload.channels) ? payload.channels : [];
+      renderAudioSourcePicker(document.getElementById('audio-src-filter')?.value || '');
+      const count = Number(payload.count || audioSourceChannels.length);
+      if (status) status.textContent = (payload.cached ? 'المصادر محفوظة محلياً' : 'اكتملت المزامنة') + ' · ' + count + ' قناة';
+      if (payload.warning) showToast(payload.warning);
+      else showToast(payload.cached ? 'تم تحميل مصادر الصوت المحفوظة' : 'تمت مزامنة مصادر الصوت وحفظها على الجهاز');
+    };
     window.onExternalAudioBuffering = function() { if (dualAudioEngine) dualAudioEngine.onBuffering(); };
     window.onExternalAudioPlaying = function() { if (dualAudioEngine) dualAudioEngine.onPlaying(); };
     window.onExternalAudioError = function(message) { if (dualAudioEngine) dualAudioEngine.onFailure(message); };
@@ -2330,7 +2356,7 @@
         currentActiveCategory='all';renderCategories();renderItems();
         if(section==='live'){
           renderAudioSourcePicker();
-          try{if(window.NativePlayback&&window.NativePlayback.populateAudioChannels)window.NativePlayback.populateAudioChannels(JSON.stringify(payload.items));}catch(_){}
+          // External audio sources now come only from the per-device M3U assigned in SONIX CONTROL.
         }
       }
     }
@@ -2985,24 +3011,45 @@
       const bein = ['bein sports','bein sport','beinsports','beinsport','be in sports','be in sport','بي ان سبورت','بي ان','بين سبورت'].some(term => searchable.includes(term));
       if (bein) return 'BEIN SPORTS'; if (/\b(alwan|al wan)\b/.test(searchable) || searchable.includes('الوان')) return 'ALWAN'; return '';
     }
+    let audioSourceChannels = [];
     function renderAudioSourcePicker(filterText = '') {
       const container = document.getElementById('audio-channels-list'); if (!container) return; container.replaceChildren();
       const query = String(filterText || '').trim().toLowerCase();
-      const available = liveChannels.filter(ch => classifyAudioSource(ch.name, ch.categoryName, ch.category))
-        .filter(ch => !videoPlaybackController || !videoPlaybackController.currentItem || String(ch.id) !== String(videoPlaybackController.currentItem.id))
+      const available = audioSourceChannels.filter(ch => ch && ch.url)
         .filter(ch => !query || String(ch.name || '').toLowerCase().includes(query) || String(ch.categoryName || '').toLowerCase().includes(query));
-      const groups = [{name:'beIN SPORTS',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.category)==='BEIN SPORTS')},{name:'ALWAN',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.category)==='ALWAN')}];
-      let count = 0; groups.forEach(group => { if (!group.items.length) return;
-        const header = document.createElement('div'); header.style.cssText = 'padding:8px 4px 5px;color:var(--accent-gold);font-weight:800;font-size:0.8rem;'; header.textContent = group.name + ' (' + group.items.length + ')'; container.appendChild(header);
-        group.items.forEach(ch => { const item = document.createElement('div'); const selected = dualAudioEngine && dualAudioEngine.selectedSourceChannel && String(dualAudioEngine.selectedSourceChannel.id)===String(ch.id);
-          item.className = 'audio-picker-item focusable' + (selected ? ' active' : ''); item.tabIndex = 0; item.dataset.channelId = String(ch.id);
-          const name = document.createElement('span'); name.textContent = String(ch.number || '') + '. ' + String(ch.name || '');
-          const category = document.createElement('span'); category.style.cssText = 'font-size:0.7rem;color:var(--text-muted);'; category.textContent = ch.categoryName || '';
-          item.append(name,category); item.addEventListener('click',()=>dualAudioEngine.setSourceChannel(ch)); container.appendChild(item); count++;
+      const groups = [
+        {name:'beIN SPORTS',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.categoryId)==='BEIN SPORTS')},
+        {name:'ALWAN',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.categoryId)==='ALWAN')}
+      ];
+      let count = 0;
+      groups.forEach(group => {
+        if (!group.items.length) return;
+        const header = document.createElement('div');
+        header.style.cssText = 'padding:8px 4px 5px;color:var(--accent-gold);font-weight:800;font-size:0.8rem;';
+        header.textContent = group.name + ' (' + group.items.length + ')';
+        container.appendChild(header);
+        group.items.forEach(ch => {
+          const item = document.createElement('div');
+          const selected = dualAudioEngine && dualAudioEngine.selectedSourceChannel && String(dualAudioEngine.selectedSourceChannel.id)===String(ch.id);
+          item.className = 'audio-picker-item focusable' + (selected ? ' active' : '');
+          item.tabIndex = 0; item.dataset.channelId = String(ch.id);
+          const name = document.createElement('span');
+          name.textContent = String(ch.number || '') + '. ' + String(ch.name || '');
+          const category = document.createElement('span');
+          category.style.cssText = 'font-size:0.7rem;color:var(--text-muted);';
+          category.textContent = ch.categoryName || group.name;
+          item.append(name,category);
+          item.addEventListener('click',()=>dualAudioEngine.setSourceChannel(ch));
+          container.appendChild(item); count++;
         });
       });
-      if (!count) { const empty = document.createElement('div'); empty.className = 'audio-picker-item'; empty.textContent = 'لا توجد مصادر صوت beIN SPORTS أو ALWAN في بيانات اشتراكك'; container.appendChild(empty); }
+      if (!count) {
+        const empty = document.createElement('div'); empty.className = 'audio-picker-item';
+        empty.textContent = 'اضغط هنا لمزامنة مصادر الصوت من لوحة SONIX';
+        container.appendChild(empty);
+      }
     }
+
     function updateFavoriteButtons(itemId) {
       const isFav = isFavorite(itemId);
       const favLabel = document.getElementById('fav-btn-label');

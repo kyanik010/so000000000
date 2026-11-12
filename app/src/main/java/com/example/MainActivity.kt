@@ -454,6 +454,7 @@ class MainActivity : ComponentActivity() {
                         if (url == "file:///android_asset/sonix_tv.html") {
                             sonixControlPageReady = true
                             if (::sonixControlClient.isInitialized) sonixControlClient.sync()
+                            if (::sonixControlClient.isInitialized) sonixControlClient.loadCachedAudioSources()
                         }
                     }
 
@@ -496,6 +497,11 @@ class MainActivity : ComponentActivity() {
             sonixControlClient.onSync = { result ->
                 val payload = JSONObject.quote(result.toString())
                 wv.post { wv.evaluateJavascript("window.onSonixControlSync && window.onSonixControlSync(JSON.parse($payload))", null) }
+            }
+
+            sonixControlClient.onAudioSourcesSync = { result ->
+                val payload = JSONObject.quote(result.toString())
+                wv.post { wv.evaluateJavascript("window.onAudioM3uSynced && window.onAudioM3uSynced(JSON.parse($payload))", null) }
             }
 
             xtreamBridge.setAsyncResultHandler { requestId, result ->
@@ -551,6 +557,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private inner class SonixControlBridge {
+        @android.webkit.JavascriptInterface
+        fun syncAudioSources() {
+            if (::sonixControlClient.isInitialized) sonixControlClient.syncAudioSources()
+        }
+        @android.webkit.JavascriptInterface
+        fun loadCachedAudioSources() {
+            if (::sonixControlClient.isInitialized) sonixControlClient.loadCachedAudioSources()
+        }
         @android.webkit.JavascriptInterface
         fun acknowledge(messageId: String) {
             if (::sonixControlClient.isInitialized) sonixControlClient.acknowledge(messageId)

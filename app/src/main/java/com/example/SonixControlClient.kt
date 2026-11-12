@@ -24,6 +24,8 @@ class SonixControlClient(context: Context) {
     }
 
     @Volatile var onSync: ((JSONObject) -> Unit)? = null
+    @Volatile var onAudioSourcesSync: ((JSONObject) -> Unit)? = null
+    private val audioM3uCatalog by lazy { com.example.audio.AudioM3uCatalog(app) }
 
     fun sync() {
         executor.execute {
@@ -40,6 +42,43 @@ class SonixControlClient(context: Context) {
                 onSync?.invoke(result)
             } catch (e: Exception) {
                 android.util.Log.w("SONIXControl", "Control sync failed", e)
+            }
+        }
+    }
+
+    fun loadCachedAudioSources() {
+        executor.execute {
+            try { onAudioSourcesSync?.invoke(audioM3uCatalog.loadCached()) }
+            catch (e: Exception) {
+                onAudioSourcesSync?.invoke(JSONObject().put("success", false).put("error", e.message ?: "تعذر قراءة مصادر الصوت"))
+            }
+        }
+    }
+
+    fun syncAudioSources() {
+        executor.execute {
+            try {
+                val config = request(JSONObject().put("action", "audio.sources").put("device_uid", deviceUid))
+                if (config.optString("status") != "active") {
+                    onAudioSourcesSync?.invoke(JSONObject().put("success", false).put("error", "الجهاز غير نشط"))
+                    return@execute
+                }
+                val m3uUrl = config.optString("m3u_url", "")
+                if (m3uUrl.isBlank()) {
+                    onAudioSourcesSync?.invoke(JSONObject().put("success", false)
+                        .put("error", "لم يضف المسؤول رابط الصوت M3U لهذا الجهاز بعد"))
+                    return@execute
+                }
+                onAudioSourcesSync?.invoke(audioM3uCatalog.sync(m3uUrl, config.optString("updated_at", "")))
+            } catch (e: Exception) {
+                val cached = audioM3uCatalog.loadCached()
+                if (cached.optBoolean("success")) {
+                    cached.put("warning", "تعذر الاتصال بلوحة SONIX؛ تم تحميل المصادر المحفوظة")
+                    onAudioSourcesSync?.invoke(cached)
+                } else {
+                    onAudioSourcesSync?.invoke(JSONObject().put("success", false)
+                        .put("error", e.message ?: "تعذر مزامنة مصادر الصوت"))
+                }
             }
         }
     }
