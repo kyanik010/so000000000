@@ -66,6 +66,10 @@ class ExternalAudioTrackOutput(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                track.release()
+                return false
+            }
             track.setVolume(volume)
             audioTrack = track
             currentSampleRate = sampleRate
@@ -123,12 +127,18 @@ class ExternalAudioTrackOutput(
             play()
         }
 
-        val written = track.write(data, offset, length, AudioTrack.WRITE_BLOCKING)
-        if (written > 0 && !hasReportedFirstSample) {
-            hasReportedFirstSample = true
-            listener.onFirstPcmSamplePlayed()
+        var total = 0
+        while (total < length) {
+            val written = track.write(data, offset + total, length - total, AudioTrack.WRITE_BLOCKING)
+            if (written < 0) throw IllegalStateException("AudioTrack.write failed: $written")
+            if (written == 0) throw IllegalStateException("AudioTrack.write returned zero")
+            total += written
+            if (!hasReportedFirstSample) {
+                hasReportedFirstSample = true
+                listener.onFirstPcmSamplePlayed()
+            }
         }
-        return written
+        return total
     }
 
     @Synchronized

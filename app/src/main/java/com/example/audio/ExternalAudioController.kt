@@ -27,6 +27,7 @@ class ExternalAudioController(
 
     private val downloader = HlsAudioSegmentDownloader()
     private val decoder = ExternalAudioMediaCodecDecoder(this)
+    private val segmentExtractor = HlsAudioSegmentExtractor(decoder)
     private val audioTrackOutput = ExternalAudioTrackOutput(this)
 
     @Volatile private var isRunning = false
@@ -173,16 +174,10 @@ class ExternalAudioController(
                 }
 
                 val segmentBytes = segmentBytesResult.getOrThrow()
-                val frames = AdtsAudioFrameExtractor.extractFrames(segmentBytes)
-                if (frames.isEmpty()) {
-                    handleFailure(generation, "المقطع ليس ADTS/AAC خاماً مدعوماً؛ فك TS اليدوي غير صالح لهذا المسار", false)
-                    return
-                }
-                for (frame in frames) {
-                    if (!shouldContinue(generation)) return
-                    if (!decoder.configure(frame.sampleRate, frame.channelCount, frame.csd0)) return
-                    decoder.decodeFrame(frame)
-                }
+                // MediaExtractor handles MPEG-TS container demuxing and exposes only audio samples.
+                // Downloaded bytes are not concatenated across PIDs or scanned for false ADTS sync words.
+                val samples = segmentExtractor.decode(segment.uri)
+                if (samples <= 0) throw IllegalStateException("لم ينتج مقطع الصوت عينات قابلة للتشغيل")
             }
 
             if (playlist.isEndList) {
@@ -269,7 +264,10 @@ class ExternalAudioController(
 
     // AudioDecoderCallback
     override fun onAudioFormatChanged(sampleRate: Int, channelCount: Int) {
-        audioTrackOutput.initialize(sampleRate, channelCount)
+        if (!audioTrackOutput.initialize(sampleRate, channelCount)) {
+            handleFailure(sessionGeneration, "تعذرت تهيئة AudioTrack للصوت الخارجي", false)
+            return
+        }
         audioTrackOutput.setVolume(currentVolume)
     }
 

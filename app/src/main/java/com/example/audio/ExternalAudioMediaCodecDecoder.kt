@@ -3,7 +3,6 @@ package com.example.audio
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.util.Log
-import java.nio.ByteBuffer
 
 interface AudioDecoderCallback {
     fun onAudioFormatChanged(sampleRate: Int, channelCount: Int)
@@ -11,130 +10,110 @@ interface AudioDecoderCallback {
     fun onDecoderError(error: Exception)
 }
 
-class ExternalAudioMediaCodecDecoder(
-    private val callback: AudioDecoderCallback
-) {
+class ExternalAudioMediaCodecDecoder(private val callback: AudioDecoderCallback) {
     private val tag = "SONIXAudioDecoder"
     private var codec: MediaCodec? = null
-    private var isConfigured = false
-    private var currentSampleRate = 0
-    private var currentChannelCount = 0
-    private val bufferInfo = MediaCodec.BufferInfo()
+    private var configuredSignature: String? = null
+    private val info = MediaCodec.BufferInfo()
 
-    @Synchronized
-    fun configure(sampleRate: Int, channelCount: Int, csd0: ByteArray): Boolean {
-        if (isConfigured && currentSampleRate == sampleRate && currentChannelCount == channelCount) {
-            return true
-        }
-
-        release()
-
+    @Synchronized fun configure(format: MediaFormat): Boolean {
         return try {
-            val format = MediaFormat.createAudioFormat(
-                MediaFormat.MIMETYPE_AUDIO_AAC,
-                sampleRate,
-                channelCount
-            ).apply {
-                setByteBuffer("csd-0", ByteBuffer.wrap(csd0))
-                setInteger(MediaFormat.KEY_AAC_PROFILE, 2) // AAC-LC
+            val mime = format.getString(MediaFormat.KEY_MIME)
+                ?: throw IllegalArgumentException("مسار الصوت لا يحدد نوع الترميز")
+            require(mime.startsWith("audio/")) { "المسار المحدد ليس صوتياً: $mime" }
+            val rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            val signature = buildString {
+                append(mime).append('|').append(rate).append('|').append(channels)
+                for (key in listOf("csd-0", "csd-1", "csd-2")) {
+                    if (format.containsKey(key)) {
+                        val buffer = format.getByteBuffer(key)?.duplicate()
+                        if (buffer != null) {
+                            val bytes = ByteArray(buffer.remaining())
+                            buffer.get(bytes)
+                            append('|').append(bytes.contentHashCode())
+                        }
+                    }
+                }
             }
-
-            val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-            decoder.configure(format, null, null, 0)
-            decoder.start()
-
-            codec = decoder
-            currentSampleRate = sampleRate
-            currentChannelCount = channelCount
-            isConfigured = true
-            callback.onAudioFormatChanged(sampleRate, channelCount)
-            Log.i(tag, "Configured AAC MediaCodec: ${sampleRate}Hz, ${channelCount}ch")
+            if (codec != null && configuredSignature == signature) return true
+            releaseCodec()
+            val created = MediaCodec.createDecoderByType(mime)
+            created.configure(format, null, null, 0)
+            created.start()
+            codec = created
+            configuredSignature = signature
+            callback.onAudioFormatChanged(rate, channels)
+            Log.i(tag, "Configured audio decoder $mime at ${rate}Hz / ${channels}ch")
             true
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to configure MediaCodec", e)
-            callback.onDecoderError(e)
+        } catch (error: Exception) {
+            Log.e(tag, "MediaCodec configuration failed", error)
+            callback.onDecoderError(error)
             false
         }
     }
 
-    @Synchronized
-    fun decodeFrame(adtsFrame: AdtsFrame, presentationTimeUs: Long = 0L) {
-        val decoder = codec ?: return
-        if (!isConfigured) return
-
+    @Synchronized fun decodeSample(data: ByteArray, ptsUs: Long) {
+        val active = codec ?: throw IllegalStateException("مفكك ترميز الصوت غير مهيأ")
+        require(data.isNotEmpty()) { "عينة صوت فارغة" }
         try {
-            // 1. Submit input frame
-            val inIndex = decoder.dequeueInputBuffer(10000L) // 10ms timeout
-            if (inIndex >= 0) {
-                val inputBuffer = decoder.getInputBuffer(inIndex)
-                if (inputBuffer != null) {
-                    inputBuffer.clear()
-                    inputBuffer.put(adtsFrame.frameData)
-                    decoder.queueInputBuffer(
-                        inIndex,
-                        0,
-                        adtsFrame.frameData.size,
-                        presentationTimeUs,
-                        0
+            var index = active.dequeueInputBuffer(10_000L)
+            if (index < 0) {
+                drain(active)
+                index = active.dequeueInputBuffer(10_000L)
+            }
+            if (index < 0) throw IllegalStateException("انتهت مهلة إدخال عينة الصوت إلى MediaCodec")
+            val input = active.getInputBuffer(index)
+                ?: throw IllegalStateException("مخزن إدخال MediaCodec غير متاح")
+            input.clear()
+            if (data.size > input.remaining()) {
+                active.queueInputBuffer(index, 0, 0, ptsUs, 0)
+                throw IllegalArgumentException("عينة الصوت أكبر من مخزن MediaCodec")
+            }
+            input.put(data)
+            active.queueInputBuffer(index, 0, data.size, ptsUs, 0)
+            drain(active)
+        } catch (error: Exception) {
+            Log.e(tag, "Compressed audio sample decode failed", error)
+            callback.onDecoderError(error)
+            throw error
+        }
+    }
+
+    private fun drain(active: MediaCodec) {
+        while (true) {
+            when (val index = active.dequeueOutputBuffer(info, 0L)) {
+                in 0..Int.MAX_VALUE -> {
+                    try {
+                        val output = active.getOutputBuffer(index)
+                        if (output != null && info.size > 0) {
+                            output.position(info.offset)
+                            output.limit(info.offset + info.size)
+                            val pcm = ByteArray(info.size)
+                            output.get(pcm)
+                            callback.onPcmDataDecoded(pcm, info.presentationTimeUs)
+                        }
+                    } finally {
+                        active.releaseOutputBuffer(index, false)
+                    }
+                }
+                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    val format = active.outputFormat
+                    callback.onAudioFormatChanged(
+                        format.getInteger(MediaFormat.KEY_SAMPLE_RATE),
+                        format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                     )
                 }
-            }
-
-            // 2. Drain output buffers
-            drainOutputBuffers(decoder)
-        } catch (e: Exception) {
-            Log.e(tag, "Error during audio decoding", e)
-            callback.onDecoderError(e)
-        }
-    }
-
-    private fun drainOutputBuffers(decoder: MediaCodec) {
-        while (true) {
-            val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0L)
-            when {
-                outIndex >= 0 -> {
-                    val outputBuffer = decoder.getOutputBuffer(outIndex)
-                    if (outputBuffer != null && bufferInfo.size > 0) {
-                        outputBuffer.position(bufferInfo.offset)
-                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                        val pcmBytes = ByteArray(bufferInfo.size)
-                        outputBuffer.get(pcmBytes)
-                        callback.onPcmDataDecoded(pcmBytes, bufferInfo.presentationTimeUs)
-                    }
-                    decoder.releaseOutputBuffer(outIndex, false)
-                }
-                outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    val newFormat = decoder.outputFormat
-                    val newSampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    val newChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                    Log.i(tag, "MediaCodec format changed: ${newSampleRate}Hz, ${newChannels}ch")
-                    currentSampleRate = newSampleRate
-                    currentChannelCount = newChannels
-                    callback.onAudioFormatChanged(newSampleRate, newChannels)
-                }
-                else -> break
+                else -> return
             }
         }
     }
 
-    @Synchronized
-    fun flush() {
-        try {
-            codec?.flush()
-        } catch (e: Exception) {
-            Log.w(tag, "Failed to flush MediaCodec", e)
-        }
-    }
-
-    @Synchronized
-    fun release() {
-        try {
-            codec?.stop()
-        } catch (_: Exception) {}
-        try {
-            codec?.release()
-        } catch (_: Exception) {}
+    @Synchronized fun release() = releaseCodec()
+    private fun releaseCodec() {
+        try { codec?.stop() } catch (_: Exception) {}
+        try { codec?.release() } catch (_: Exception) {}
         codec = null
-        isConfigured = false
+        configuredSignature = null
     }
 }
