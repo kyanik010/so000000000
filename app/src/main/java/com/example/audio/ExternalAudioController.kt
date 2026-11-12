@@ -10,7 +10,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -108,12 +107,22 @@ class ExternalAudioController(
                     when (state) {
                         Player.STATE_BUFFERING -> listener.onExternalAudioBuffering()
                         Player.STATE_READY -> {
+                            val hasSelectedAudioTrack = audioPlayer.currentTracks.groups.any {
+                                it.type == C.TRACK_TYPE_AUDIO && it.isSelected
+                            }
+                            if (!hasSelectedAudioTrack) {
+                                scheduleRetry(
+                                    activeGeneration,
+                                    "مصدر الصوت لا يحتوي مسارًا صوتيًا محددًا قابلاً للتشغيل"
+                                )
+                                return
+                            }
                             cancelRetry()
                             retryAttempt = 0
                             if (!readyReported) {
                                 readyReported = true
                                 applySyncOffset(audioPlayer)
-                                // Player B is prepared and its audio renderer/track is ready.
+                                // Do not switch A to silence unless B has a selected audio track.
                                 listener.onExternalAudioFirstPcmVerified()
                                 if (!isPaused) listener.onExternalAudioPlaying()
                             }
