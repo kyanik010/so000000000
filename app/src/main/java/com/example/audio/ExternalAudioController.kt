@@ -53,6 +53,18 @@ class ExternalAudioController(
     private var readyReported = false
     private var syncOffsetApplied = false
 
+    companion object {
+        /**
+         * Exponential retry backoff shared with the external-audio retry policy tests.
+         * The delay is capped to avoid an unbounded wait on unstable IPTV sources.
+         */
+        @JvmStatic
+        fun calculateRetryDelayMs(attempt: Int): Long {
+            val delays = longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L)
+            return delays[(attempt.coerceAtLeast(1) - 1).coerceAtMost(delays.lastIndex)]
+        }
+    }
+
     fun isActive(): Boolean = isRunning
     fun isPausedState(): Boolean = isPaused
 
@@ -190,17 +202,13 @@ class ExternalAudioController(
         if (!isCurrent(activeGeneration)) return
         releasePlayer()
         retryAttempt++
-        val willRetry = retryAttempt <= 3
+        val willRetry = retryAttempt <= 6
         listener.onExternalAudioError(message, willRetry)
         if (!willRetry) {
             isRunning = false
             return
         }
-        val delayMs = when (retryAttempt) {
-            1 -> 1_000L
-            2 -> 2_000L
-            else -> 4_000L
-        }
+        val delayMs = calculateRetryDelayMs(retryAttempt)
         listener.onExternalAudioBuffering()
         val retry = Runnable {
             retryRunnable = null
