@@ -382,12 +382,7 @@ class MainActivity : ComponentActivity() {
     private var resumeNativePlayerAfterPause = false
     @Volatile private var nativePlayerActive = false
     @Volatile private var nativePlayerPlaying = false
-    private var secondaryAudioPlayer: ExoPlayer? = null
-    private val externalAudioHandler = Handler(Looper.getMainLooper())
-    private var externalAudioRetryRunnable: Runnable? = null
-    private var externalAudioRetryAttempt = 0
-    private var externalAudioGeneration = 0L
-    private var externalAudioSourceUrl = ""
+    private var externalAudioController: com.example.audio.ExternalAudioController? = null
     private var nativeTrackSelectionBeforeExternalAudio: TrackSelectionParameters? = null
     @Volatile private var externalAudioActive = false
     private var externalAudioSyncOffsetMs = 0L
@@ -981,10 +976,10 @@ class MainActivity : ComponentActivity() {
                 nativePlayer?.let {
                     if (it.isPlaying) {
                         it.pause()
-                        secondaryAudioPlayer?.pause()
+                        externalAudioController?.pause()
                     } else {
                         it.play()
-                        if (externalAudioActive) secondaryAudioPlayer?.play()
+                        if (externalAudioActive) externalAudioController?.resume()
                     }
                 }
             }
@@ -1000,7 +995,7 @@ class MainActivity : ComponentActivity() {
         fun pause() {
             runOnUiThread {
                 nativePlayer?.pause()
-                if (externalAudioActive) secondaryAudioPlayer?.pause()
+                if (externalAudioActive) externalAudioController?.pause()
             }
         }
 
@@ -1008,7 +1003,7 @@ class MainActivity : ComponentActivity() {
         fun resume() {
             runOnUiThread {
                 nativePlayer?.play()
-                if (externalAudioActive) secondaryAudioPlayer?.play()
+                if (externalAudioActive) externalAudioController?.resume()
             }
         }
 
@@ -1028,9 +1023,6 @@ class MainActivity : ComponentActivity() {
                 val target = (player.currentPosition + offsetMs).coerceAtLeast(0L)
                 val duration = player.duration
                 player.seekTo(if (duration > 0L) target.coerceAtMost(duration) else target)
-                if (externalAudioActive) {
-                    secondaryAudioPlayer?.seekTo(target)
-                }
             }
         }
 
@@ -1044,7 +1036,6 @@ class MainActivity : ComponentActivity() {
                     if (duration > 0L) requested.coerceAtMost(duration) else requested
                 }
                 player.seekTo(target)
-                if (externalAudioActive) secondaryAudioPlayer?.seekTo(target)
             }
         }
 
@@ -1350,16 +1341,16 @@ class MainActivity : ComponentActivity() {
         fun setExternalAudioVolume(volume: Float) {
             runOnUiThread {
                 externalAudioVolume = volume.coerceIn(0f, 1f)
-                secondaryAudioPlayer?.volume = externalAudioVolume
+                externalAudioController?.setVolume(externalAudioVolume)
             }
         }
 
         @android.webkit.JavascriptInterface
-        fun pauseExternalAudio() { runOnUiThread { secondaryAudioPlayer?.pause() } }
+        fun pauseExternalAudio() { runOnUiThread { externalAudioController?.pause() } }
 
         @android.webkit.JavascriptInterface
         fun resumeExternalAudio() {
-            runOnUiThread { if (externalAudioActive) secondaryAudioPlayer?.play() }
+            runOnUiThread { if (externalAudioActive) externalAudioController?.resume() }
         }
 
         @android.webkit.JavascriptInterface
@@ -1395,6 +1386,53 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun ensureExternalAudioController(): com.example.audio.ExternalAudioController {
+        return externalAudioController ?: com.example.audio.ExternalAudioController(object : com.example.audio.ExternalAudioEventListener {
+            override fun onExternalAudioBuffering() {
+                runOnUiThread {
+                    webView?.evaluateJavascript("window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
+                }
+            }
+
+            override fun onExternalAudioPlaying() {
+                runOnUiThread {
+                    webView?.evaluateJavascript("window.onExternalAudioPlaying && window.onExternalAudioPlaying()", null)
+                }
+            }
+
+            override fun onExternalAudioFirstPcmVerified() {
+                runOnUiThread {
+                    // Mute Player A ONLY after B outputs verified PCM samples to AudioTrack!
+                    nativePlayer?.let { primary ->
+                        if (nativeTrackSelectionBeforeExternalAudio == null) {
+                            nativeTrackSelectionBeforeExternalAudio = primary.trackSelectionParameters
+                            if (!nativeVideoMuted) nativeVideoVolumeBeforeExternalAudio = primary.volume
+                        }
+                        if (!nativeVideoMuted) primary.volume = 0f
+                    }
+                }
+            }
+
+            override fun onExternalAudioError(message: String, willRetry: Boolean) {
+                runOnUiThread {
+                    android.util.Log.w("SONIXExternalAudio", "External audio error: $message, willRetry: $willRetry")
+                    // Immediately restore A's audio if error occurs so user is never left in silence
+                    if (!nativeVideoMuted) {
+                        nativePlayer?.volume = nativeVideoVolumeBeforeExternalAudio
+                    }
+                    val quoted = JSONObject.quote(message)
+                    webView?.evaluateJavascript("window.onExternalAudioError && window.onExternalAudioError($quoted)", null)
+                }
+            }
+
+            override fun onExternalAudioDetached() {
+                runOnUiThread {
+                    webView?.evaluateJavascript("window.onExternalAudioDetached && window.onExternalAudioDetached()", null)
+                }
+            }
+        }).also { externalAudioController = it }
+    }
+
     private fun attachExternalAudioInternal(rawUrl: String, compareWithVideo: Boolean = true) {
         val url = rawUrl.trim()
         try {
@@ -1414,149 +1452,23 @@ class MainActivity : ComponentActivity() {
             webView?.evaluateJavascript("window.onExternalAudioError && window.onExternalAudioError($message)", null)
             return
         }
-        externalAudioRetryRunnable?.let(externalAudioHandler::removeCallbacks)
-        externalAudioRetryRunnable = null
-        externalAudioGeneration++
-        externalAudioRetryAttempt = 0
-        externalAudioSourceUrl = url
-        val generation = externalAudioGeneration
+
         externalAudioActive = true
-        webView?.evaluateJavascript("window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
-        startExternalAudioAttempt(generation)
-    }
-
-    private fun startExternalAudioAttempt(generation: Long) {
-        if (generation != externalAudioGeneration || !externalAudioActive) return
-        releaseSecondaryAudio()
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(5000, 30000, 1500, 5000)
-            .build()
-        // Use the same IPTV HTTP identity and redirect handling as the primary
-        // video player. Some providers reject ExoPlayer's default User-Agent.
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("SONIX-TV/1.0")
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(30000)
-        val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
-        val audioPlayer = ExoPlayer.Builder(this)
-            .setLoadControl(loadControl)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .build().apply {
-                trackSelectionParameters = trackSelectionParameters.buildUpon()
-                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true).build()
-                volume = externalAudioVolume
-            }
-        secondaryAudioPlayer = audioPlayer
-        audioPlayer.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                if (generation != externalAudioGeneration || secondaryAudioPlayer !== audioPlayer) return
-                when (state) {
-                    Player.STATE_BUFFERING -> webView?.evaluateJavascript(
-                        "window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
-                    Player.STATE_READY -> {
-                        externalAudioRetryRunnable?.let(externalAudioHandler::removeCallbacks)
-                        externalAudioRetryRunnable = null
-                        externalAudioRetryAttempt = 0
-                        applyExternalAudioSyncOffset()
-
-                        // Save the user's original track policy once (OFF -> ON), then
-                        // disable audio decoding on video A while keeping its video renderer alive.
-                        nativePlayer?.let { primary ->
-                            if (nativeTrackSelectionBeforeExternalAudio == null) {
-                                nativeTrackSelectionBeforeExternalAudio = primary.trackSelectionParameters
-                                if (!nativeVideoMuted) nativeVideoVolumeBeforeExternalAudio = primary.volume
-                            }
-                            primary.trackSelectionParameters = primary.trackSelectionParameters.buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
-                                .build()
-                            if (!nativeVideoMuted) primary.volume = 0f
-                        }
-
-                        webView?.evaluateJavascript(
-                            "window.onExternalAudioPlaying && window.onExternalAudioPlaying()", null)
-                    }
-                    Player.STATE_ENDED -> scheduleExternalAudioRetry(generation)
-                    Player.STATE_IDLE -> Unit
-                }
-            }
-            override fun onPlayerError(error: PlaybackException) {
-                if (generation != externalAudioGeneration || secondaryAudioPlayer !== audioPlayer) return
-                android.util.Log.w("SONIXExternalAudio", "External audio failed: ${error.errorCodeName}")
-                // Keep A's audio disabled while B is retried; do not disturb video A.
-                scheduleExternalAudioRetry(generation)
-            }
-        })
-        try {
-            val audioUri = Uri.parse(externalAudioSourceUrl)
-            val extension = audioUri.lastPathSegment
-                ?.substringAfterLast('.', "")
-                ?.lowercase()
-                .orEmpty()
-            val mimeType = when (extension) {
-                "m3u8" -> MimeTypes.APPLICATION_M3U8
-                "mpd" -> MimeTypes.APPLICATION_MPD
-                "ts", "mpegts" -> MimeTypes.VIDEO_MP2T
-                "aac" -> MimeTypes.AUDIO_AAC
-                "mp3" -> MimeTypes.AUDIO_MPEG
-                else -> null
-            }
-            val mediaItem = MediaItem.Builder()
-                .setUri(audioUri)
-                .apply { if (mimeType != null) setMimeType(mimeType) }
-                .build()
-            audioPlayer.setMediaItem(mediaItem)
-            audioPlayer.prepare()
-            audioPlayer.play()
-        } catch (error: Exception) {
-            android.util.Log.w("SONIXExternalAudio", "Could not start secondary audio player")
-            scheduleExternalAudioRetry(generation)
-        }
-    }
-
-    private fun scheduleExternalAudioRetry(generation: Long) {
-        if (generation != externalAudioGeneration || !externalAudioActive) return
-        releaseSecondaryAudio()
-        externalAudioRetryAttempt = (externalAudioRetryAttempt + 1).coerceAtMost(6)
-        val delayMs = externalAudioRetryDelayMs(externalAudioRetryAttempt)
-        webView?.evaluateJavascript("window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
-        val retry = Runnable {
-            externalAudioRetryRunnable = null
-            if (generation == externalAudioGeneration && externalAudioActive) startExternalAudioAttempt(generation)
-        }
-        externalAudioRetryRunnable = retry
-        externalAudioHandler.postDelayed(retry, delayMs)
+        val controller = ensureExternalAudioController()
+        controller.setVolume(externalAudioVolume)
+        controller.setSyncOffset(externalAudioSyncOffsetMs)
+        controller.start(url)
     }
 
     private fun setExternalAudioSyncOffsetInternal(offsetMs: Long) {
         externalAudioSyncOffsetMs = offsetMs.coerceIn(-10000L, 10000L)
-        applyExternalAudioSyncOffset()
-    }
-
-    private fun applyExternalAudioSyncOffset() {
-        val player = secondaryAudioPlayer ?: return
-        val offset = externalAudioSyncOffsetMs
-        try {
-            if (offset > 0L) {
-                val position = player.currentPosition
-                if (position > offset) player.seekTo(position - offset)
-            } else if (offset < 0L) {
-                player.seekTo(player.currentPosition + kotlin.math.abs(offset))
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("SONIXExternalAudio", "Offset seek failed", e)
-        }
+        externalAudioController?.setSyncOffset(externalAudioSyncOffsetMs)
     }
 
     private fun detachExternalAudioInternal(notifyWeb: Boolean) {
-        externalAudioRetryRunnable?.let(externalAudioHandler::removeCallbacks)
-        externalAudioRetryRunnable = null
-        externalAudioGeneration++
-        externalAudioRetryAttempt = 0
-        externalAudioSourceUrl = ""
         val wasActive = externalAudioActive
         externalAudioActive = false
-        releaseSecondaryAudio()
+        externalAudioController?.stop()
         nativeTrackSelectionBeforeExternalAudio?.let { originalParameters ->
             nativePlayer?.trackSelectionParameters = originalParameters
         }
@@ -1568,15 +1480,6 @@ class MainActivity : ComponentActivity() {
             webView?.evaluateJavascript(
                 "window.onExternalAudioDetached && window.onExternalAudioDetached()", null)
         }
-    }
-
-    private fun releaseSecondaryAudio() {
-        secondaryAudioPlayer?.let { player ->
-            player.stop()
-            player.clearMediaItems()
-            player.release()
-        }
-        secondaryAudioPlayer = null
     }
 
     private fun deliverSubtitleResponse(requestId: String, payload: String) {
@@ -2258,7 +2161,7 @@ class MainActivity : ComponentActivity() {
         webView?.onResume()
         if (::sonixControlClient.isInitialized && sonixControlPageReady) sonixControlClient.sync()
         if (resumeNativePlayerAfterPause) nativePlayer?.play()
-        if (resumeNativePlayerAfterPause && externalAudioActive) secondaryAudioPlayer?.play()
+        if (resumeNativePlayerAfterPause && externalAudioActive) externalAudioController?.resume()
         resumeNativePlayerAfterPause = false
     }
 
@@ -2270,7 +2173,7 @@ class MainActivity : ComponentActivity() {
         )
         resumeNativePlayerAfterPause = nativePlayer?.isPlaying == true
         nativePlayer?.pause()
-        secondaryAudioPlayer?.pause()
+        externalAudioController?.pause()
         webView?.onPause()
     }
 
