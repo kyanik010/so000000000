@@ -1426,11 +1426,13 @@ class MainActivity : ComponentActivity() {
         }
         externalAudioRetryRunnable?.let(externalAudioHandler::removeCallbacks)
         externalAudioRetryRunnable = null
-        // A source switch must terminate any previous extractor session before B is replaced.
-        try {
-            com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
-                .stopIndependentAudio()
-        } catch (_: Exception) {}
+        // Stop only a previous ID/extractor session; panel M3U URLs keep their own subscription.
+        if (externalAudioStreamId.isNotBlank() || externalAudioUsingExtractorFallback) {
+            try {
+                com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
+                    .stopIndependentAudio()
+            } catch (_: Exception) {}
+        }
         if (!preserveStreamIdForFallback) {
             externalAudioStreamId = ""
             externalAudioExtension = "ts"
@@ -1533,9 +1535,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (externalAudioRetryAttempt >= 7) {
-            externalAudioActive = false
+            detachExternalAudioInternal(false)
             webView?.evaluateJavascript(
-                "window.onExternalAudioError && window.onExternalAudioError('تعذر تشغيل مصدر الصوت بعد 3 محاولات', false)",
+                "window.onExternalAudioError && window.onExternalAudioError('تعذر تشغيل مصدر الصوت بعد 7 محاولات', false)",
                 null
             )
             return
