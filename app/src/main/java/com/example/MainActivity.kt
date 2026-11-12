@@ -1313,17 +1313,15 @@ class MainActivity : ComponentActivity() {
                         "امتداد البث الصوتي غير صالح"
                     }
 
-                    // Stop only a previous extraction fallback. The video player is never reset here.
-                    try {
-                        com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
-                            .stopIndependentAudio()
-                    } catch (_: Exception) {}
-
                     externalAudioStreamId = normalizedStreamId
                     externalAudioExtension = normalizedExtension
                     externalAudioUsingExtractorFallback = false
                     val sourceUri = xtreamBridge.buildPlaybackUri("live", normalizedStreamId, normalizedExtension)
-                    attachExternalAudioInternal(sourceUri.toString(), compareWithVideo = false)
+                    attachExternalAudioInternal(
+                        sourceUri.toString(),
+                        compareWithVideo = false,
+                        preserveStreamIdForFallback = true
+                    )
                 } catch (error: Exception) {
                     detachExternalAudioInternal(false)
                     val message = JSONObject.quote(error.message ?: "تعذر إنشاء رابط القناة الصوتية")
@@ -1403,7 +1401,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun attachExternalAudioInternal(rawUrl: String, compareWithVideo: Boolean = true) {
+    private fun attachExternalAudioInternal(
+        rawUrl: String,
+        compareWithVideo: Boolean = true,
+        preserveStreamIdForFallback: Boolean = false
+    ) {
         val url = rawUrl.trim()
         try {
             val uri = Uri.parse(url)
@@ -1424,6 +1426,16 @@ class MainActivity : ComponentActivity() {
         }
         externalAudioRetryRunnable?.let(externalAudioHandler::removeCallbacks)
         externalAudioRetryRunnable = null
+        // A source switch must terminate any previous extractor session before B is replaced.
+        try {
+            com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
+                .stopIndependentAudio()
+        } catch (_: Exception) {}
+        if (!preserveStreamIdForFallback) {
+            externalAudioStreamId = ""
+            externalAudioExtension = "ts"
+            externalAudioUsingExtractorFallback = false
+        }
         externalAudioGeneration++
         externalAudioRetryAttempt = 0
         externalAudioSourceUrl = url
@@ -1437,15 +1449,15 @@ class MainActivity : ComponentActivity() {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(1500, 10000, 250, 750)
+            .setBufferDurationsMs(5000, 30000, 1500, 5000)
             .build()
         // Use the same IPTV HTTP identity and redirect handling as the primary
         // video player. Some providers reject ExoPlayer's default User-Agent.
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("SONIX-TV/1.0")
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(8000)
-            .setReadTimeoutMs(12000)
+            .setConnectTimeoutMs(15000)
+            .setReadTimeoutMs(30000)
         val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
         val audioPlayer = ExoPlayer.Builder(this)
             .setLoadControl(loadControl)
@@ -1512,7 +1524,7 @@ class MainActivity : ComponentActivity() {
     private fun scheduleExternalAudioRetry(generation: Long) {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
-        externalAudioRetryAttempt = (externalAudioRetryAttempt + 1).coerceAtMost(3)
+        externalAudioRetryAttempt = (externalAudioRetryAttempt + 1).coerceAtMost(7)
         if (!externalAudioUsingExtractorFallback &&
             externalAudioStreamId.isNotBlank() &&
             externalAudioRetryAttempt >= 2
@@ -1520,7 +1532,7 @@ class MainActivity : ComponentActivity() {
             startExternalAudioExtractionFallback(generation)
             return
         }
-        if (externalAudioRetryAttempt >= 3) {
+        if (externalAudioRetryAttempt >= 7) {
             externalAudioActive = false
             webView?.evaluateJavascript(
                 "window.onExternalAudioError && window.onExternalAudioError('تعذر تشغيل مصدر الصوت بعد 3 محاولات', false)",
