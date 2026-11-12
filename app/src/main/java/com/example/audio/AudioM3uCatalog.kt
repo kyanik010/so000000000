@@ -104,7 +104,7 @@ class AudioM3uCatalog(context: Context) {
                     val rawLine = reader.readLine() ?: break
                     lineCount++
                     totalChars += rawLine.length
-                    if (totalChars > 12 * 1024 * 1024) throw IllegalStateException("حجم قائمة M3U أكبر من الحد المسموح")
+                    if (totalChars > 128 * 1024 * 1024) throw IllegalStateException("حجم قائمة M3U تجاوز الحد الآمن (128 ميغابايت)")
                     val line = rawLine.trim().removePrefix("\uFEFF")
                     if (line.isEmpty()) continue
 
