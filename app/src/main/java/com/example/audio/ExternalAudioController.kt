@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.media3.common.C
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -50,6 +51,7 @@ class ExternalAudioController(
     private var player: ExoPlayer? = null
     private var retryRunnable: Runnable? = null
     private var readyReported = false
+    private var syncOffsetApplied = false
 
     fun isActive(): Boolean = isRunning
     fun isPausedState(): Boolean = isPaused
@@ -77,6 +79,7 @@ class ExternalAudioController(
         if (!isCurrent(activeGeneration)) return
         releasePlayer()
         readyReported = false
+        syncOffsetApplied = false
 
         try {
             val httpFactory = DefaultHttpDataSource.Factory()
@@ -119,12 +122,9 @@ class ExternalAudioController(
                             }
                             cancelRetry()
                             retryAttempt = 0
-                            if (!readyReported) {
-                                readyReported = true
+                            if (!syncOffsetApplied) {
                                 applySyncOffset(audioPlayer)
-                                // Do not switch A to silence unless B has a selected audio track.
-                                listener.onExternalAudioFirstPcmVerified()
-                                if (!isPaused) listener.onExternalAudioPlaying()
+                                syncOffsetApplied = true
                             }
                         }
                         Player.STATE_ENDED -> scheduleRetry(
@@ -142,6 +142,19 @@ class ExternalAudioController(
                         activeGeneration,
                         "تعذر تشغيل مصدر الصوت: ${error.errorCodeName}"
                     )
+                }
+            })
+
+            audioPlayer.addAnalyticsListener(object : AnalyticsListener {
+                override fun onAudioPositionAdvancing(
+                    eventTime: AnalyticsListener.EventTime,
+                    playoutStartSystemTimeMs: Long
+                ) {
+                    if (!isCurrentPlayer(activeGeneration, audioPlayer) || readyReported) return
+                    readyReported = true
+                    // This callback means the secondary audio output position has begun advancing.
+                    listener.onExternalAudioFirstPcmVerified()
+                    if (!isPaused) listener.onExternalAudioPlaying()
                 }
             })
 
