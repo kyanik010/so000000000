@@ -730,7 +730,7 @@ class MainActivity : ComponentActivity() {
 
             nativePlayerActive = true
             nativePlayerPlaying = false
-            player.volume = if (externalAudioActive || nativeVideoMuted) 0f else 1f
+            player.volume = if (nativeVideoMuted || (externalAudioActive && nativeTrackSelectionBeforeExternalAudio != null)) 0f else 1f
             // A reused player must not carry a previous item's forced track override.
             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                 .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
@@ -1011,7 +1011,7 @@ class MainActivity : ComponentActivity() {
         fun setMuted(muted: Boolean) {
             runOnUiThread {
                 nativeVideoMuted = muted
-                nativePlayer?.volume = if (externalAudioActive || muted) 0f else 1f
+                nativePlayer?.volume = if (muted || (externalAudioActive && nativeTrackSelectionBeforeExternalAudio != null)) 0f else 1f
             }
         }
 
