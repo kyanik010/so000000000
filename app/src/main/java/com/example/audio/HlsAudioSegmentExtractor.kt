@@ -1,6 +1,7 @@
 package com.example.audio
 
 import android.media.MediaExtractor
+import android.media.MediaDataSource
 import android.media.MediaFormat
 import java.nio.ByteBuffer
 
@@ -54,6 +55,20 @@ class HlsAudioSegmentExtractor(private val decoder: ExternalAudioMediaCodecDecod
             return count
         } finally {
             extractor.release()
+            source.close()
         }
+    }
+
+    private class ByteArraySegmentDataSource(private val data: ByteArray) : MediaDataSource() {
+        override fun getSize(): Long = data.size.toLong()
+
+        override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+            if (position >= data.size) return -1
+            val count = minOf(size, data.size - position.toInt())
+            System.arraycopy(data, position.toInt(), buffer, offset, count)
+            return count
+        }
+
+        override fun close() = Unit
     }
 }

@@ -36,6 +36,7 @@ class ExternalAudioController(
     @Volatile private var syncOffsetMs: Long = 0L
     @Volatile private var currentVolume: Float = 1.0f
     @Volatile private var retryAttempt: Int = 0
+    @Volatile private var failurePending: Boolean = false
     @Volatile private var sessionGeneration: Long = 0L
 
     private val retryRunnable = AtomicBoolean(false)
@@ -51,6 +52,7 @@ class ExternalAudioController(
         sessionGeneration++
         val gen = sessionGeneration
         retryAttempt = 0
+        failurePending = false
         currentSourceUrl = trimmed
         isRunning = true
         isPaused = false
@@ -167,16 +169,12 @@ class ExternalAudioController(
 
                 val segmentBytesResult = downloader.downloadBytes(segment.uri)
                 if (!shouldContinue(generation)) return
-
                 if (segmentBytesResult.isFailure) {
-                    Log.w(tag, "Skipping failed segment: ${segment.uri}")
-                    continue
+                    throw segmentBytesResult.exceptionOrNull() ?: Exception("تعذر تحميل مقطع الصوت")
                 }
-
                 val segmentBytes = segmentBytesResult.getOrThrow()
-                // MediaExtractor handles MPEG-TS container demuxing and exposes only audio samples.
-                // Downloaded bytes are not concatenated across PIDs or scanned for false ADTS sync words.
-                val samples = segmentExtractor.decode(segment.uri)
+                // MediaExtractor demuxes the downloaded TS segment and exposes only its audio track.
+                val samples = segmentExtractor.decode(segmentBytes)
                 if (samples <= 0) throw IllegalStateException("لم ينتج مقطع الصوت عينات قابلة للتشغيل")
             }
 
@@ -195,7 +193,8 @@ class ExternalAudioController(
     }
 
     private fun handleFailure(generation: Long, errorMessage: String, retryable: Boolean = true) {
-        if (!shouldContinue(generation)) return
+        if (!shouldContinue(generation) || failurePending) return
+        failurePending = true
 
         releaseComponents()
         val willRetry = retryable && retryAttempt < 3 && isRunning
@@ -210,6 +209,7 @@ class ExternalAudioController(
             Log.i(tag, "Scheduling audio retry #$retryAttempt in $delayMs ms")
             mainHandler.postDelayed({
                 if (shouldContinue(generation) && isRunning) {
+                    failurePending = false
                     mainHandler.post { listener.onExternalAudioBuffering() }
                     startPipelineSession(generation, currentSourceUrl)
                 }
