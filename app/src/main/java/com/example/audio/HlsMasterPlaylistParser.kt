@@ -33,8 +33,8 @@ object HlsMasterPlaylistParser {
     private val EXT_X_STREAM_INF_REGEX = Regex("""#EXT-X-STREAM-INF:(.+)""")
     private val ATTRIBUTE_REGEX = Regex("""([A-Z0-9\-]+)=("[^"]*"|[^",\s]+)""")
 
-    fun isMasterPlaylist(content: String): Boolean {
-        return content.contains("#EXT-X-MEDIA:TYPE=AUDIO") || content.contains("#EXT-X-STREAM-INF")
+    fun isMasterPlaylist(content: String): Boolean = content.lineSequence().map { it.trim() }.any {
+        it.startsWith("#EXT-X-STREAM-INF:") || it.startsWith("#EXT-X-MEDIA:")
     }
 
     fun parse(baseUri: String, content: String): HlsMasterPlaylist {
@@ -91,12 +91,9 @@ object HlsMasterPlaylistParser {
         if (candidates.isEmpty()) return null
 
         // 1. Filter by stream-inf audio group if present
-        val filtered = if (playlist.streamAudioGroupIds.isNotEmpty()) {
-            val matched = candidates.filter { it.groupId in playlist.streamAudioGroupIds }
-            if (matched.isNotEmpty()) matched else candidates
-        } else {
-            candidates
-        }
+        if (playlist.streamAudioGroupIds.isEmpty()) return null
+        val filtered = candidates.filter { it.groupId.isNotBlank() && it.groupId in playlist.streamAudioGroupIds }
+        if (filtered.isEmpty()) return null
 
         // 2. Match preferred language if specified
         if (!preferredLanguage.isNullOrBlank()) {

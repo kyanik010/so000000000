@@ -830,8 +830,7 @@
           showToast('تعذر الحصول على رابط القناة الصوتية من لوحة SONIX');
           return;
         }
-        if (!this.isActive) this.originalVideoMuted = !!this.videoController.isMuted;
-        this.videoController.isMuted = true;
+        // Keep source A audible until native confirms B has written its first PCM sample.
         this.isActive = true;
         this.setStatus('connecting', 'جارٍ الاتصال...');
         this.activeBadgeEl.classList.add('visible');
@@ -844,13 +843,18 @@
         else window.NativePlayback.attachExternalAudioStream(String(source.id), source.containerExtension || 'ts');
       }
       onBuffering() { if (this.isActive) this.setStatus('connecting', 'جارٍ الاتصال أو إعادة المحاولة...'); }
-      onPlaying() { if (this.isActive) { this.setStatus('playing', 'يعمل'); showToast('بدأ تشغيل القناة الصوتية المستقلة عبر Media3'); } }
-      onFailure(message) { this.stopExternalAudio(false, false); this.setStatus('failed', message || 'فشل الاتصال'); showToast(message || 'فشل تشغيل مصدر الصوت الخارجي؛ تمت استعادة صوت الفيديو'); }
+      onPlaying() { if (this.isActive) { this.setStatus('playing', 'يعمل'); showToast('بدأ تشغيل الصوت الخارجي'); } }
+      onFailure(message, willRetry = false) {
+        if (willRetry) { if (this.isActive) this.setStatus('connecting', 'تعذرت القراءة؛ إعادة المحاولة المحدودة…'); return; }
+        this.stopExternalAudio(false, false);
+        this.setStatus('failed', message || 'فشل الاتصال');
+        showToast(message || 'فشل تشغيل مصدر الصوت الخارجي؛ تمت استعادة صوت الفيديو');
+      }
       stopExternalAudio(showMessage = true, notifyNative = true) {
         if (notifyNative && window.NativePlayback) window.NativePlayback.detachExternalAudio();
         this.isActive = false;
-        this.videoController.isMuted = this.originalVideoMuted;
-        this.originalVideoMuted = false; this.delayMs = 0; this.updateDelayLabel();
+        // Native restores source A; preserve the user's own mute preference.
+        this.delayMs = 0; this.updateDelayLabel();
         this.activeBadgeEl.classList.remove('visible'); this.btnExtAudio.classList.remove('is-active'); this.btnExtAudioText.textContent = 'الصوت الخارجي'; this.setStatus('stopped', 'متوقف');
         if (showMessage) showToast('تم إيقاف الصوت الخارجي واستعادة صوت القناة الأساسية');
       }
@@ -905,7 +909,7 @@
     };
     window.onExternalAudioBuffering = function() { if (dualAudioEngine) dualAudioEngine.onBuffering(); };
     window.onExternalAudioPlaying = function() { if (dualAudioEngine) dualAudioEngine.onPlaying(); };
-    window.onExternalAudioError = function(message) { if (dualAudioEngine) dualAudioEngine.onFailure(message); };
+    window.onExternalAudioError = function(message, willRetry) { if (dualAudioEngine) dualAudioEngine.onFailure(message, !!willRetry); };
     window.onExternalAudioStopped = function() { if (dualAudioEngine && dualAudioEngine.isActive) dualAudioEngine.stopExternalAudio(false, false); };
     window.onExternalAudioDetached = function() {
       if (dualAudioEngine && dualAudioEngine.isActive) dualAudioEngine.stopExternalAudio(false, false);

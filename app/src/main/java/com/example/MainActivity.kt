@@ -1420,8 +1420,11 @@ class MainActivity : ComponentActivity() {
                     if (!nativeVideoMuted) {
                         nativePlayer?.volume = nativeVideoVolumeBeforeExternalAudio
                     }
+                    if (!willRetry) externalAudioActive = false
                     val quoted = JSONObject.quote(message)
-                    webView?.evaluateJavascript("window.onExternalAudioError && window.onExternalAudioError($quoted)", null)
+                    webView?.evaluateJavascript(
+                        "window.onExternalAudioError && window.onExternalAudioError($quoted, $willRetry)", null
+                    )
                 }
             }
 

@@ -80,18 +80,17 @@ class ExternalAudioController(
             }
 
             val content = textResult.getOrThrow()
+            if (!content.trimStart().startsWith("#EXTM3U")) {
+                handleFailure(generation, "المصدر ليس قائمة HLS بصيغة m3u8؛ لا يمكن قراءة بث TS مباشر كنص", false)
+                return
+            }
             val targetMediaPlaylistUri = if (HlsMasterPlaylistParser.isMasterPlaylist(content)) {
                 val masterPlaylist = HlsMasterPlaylistParser.parse(url, content)
                 val bestAudio = HlsMasterPlaylistParser.selectBestAudioRendition(masterPlaylist)
-                if (bestAudio != null) {
-                    Log.i(tag, "Discovered independent audio rendition: ${bestAudio.name} -> ${bestAudio.uri}")
-                    bestAudio.uri
-                } else {
-                    url
-                }
-            } else {
-                url
-            }
+                    ?: throw IllegalArgumentException("لا يوجد مسار صوت مستقل صالح مرتبط بمجموعة AUDIO في القائمة الرئيسية")
+                Log.i(tag, "Discovered independent audio rendition: ${bestAudio.name} -> ${bestAudio.uri}")
+                bestAudio.uri
+            } else url
 
             // Step 2: Poll and play media playlist
             runMediaPlaylistLoop(generation, targetMediaPlaylistUri)
@@ -103,6 +102,7 @@ class ExternalAudioController(
 
     private fun runMediaPlaylistLoop(generation: Long, mediaPlaylistUri: String) {
         val processedSegments = HashSet<String>()
+        var emptyPolls = 0
 
         while (shouldContinue(generation)) {
             while (isPaused && shouldContinue(generation)) {
@@ -122,11 +122,21 @@ class ExternalAudioController(
             }
 
             val playlistContent = playlistResult.getOrThrow()
+            if (!playlistContent.trimStart().startsWith("#EXTM3U")) {
+                handleFailure(generation, "رابط مسار الصوت لا يعيد قائمة HLS صالحة", false)
+                return
+            }
             val playlist = HlsAudioPlaylistParser.parseMediaPlaylist(mediaPlaylistUri, playlistContent)
+            playlist.unsupportedReason?.let { handleFailure(generation, it, false); return }
             val segments = playlist.segments
 
             val newSegments = segments.filter { it.uri !in processedSegments }
             if (newSegments.isEmpty() && !playlist.isEndList) {
+                emptyPolls++
+                if (emptyPolls >= 4) {
+                    handleFailure(generation, "قائمة الصوت المباشر لا تقدم مقاطع جديدة", true)
+                    return
+                }
                 val sleepTime = ((playlist.targetDurationSec * 1000) / 2).toLong().coerceIn(1000L, 5000L)
                 try {
                     Thread.sleep(sleepTime)
@@ -136,6 +146,7 @@ class ExternalAudioController(
                 continue
             }
 
+            if (newSegments.isNotEmpty()) emptyPolls = 0
             for (segment in newSegments) {
                 if (!shouldContinue(generation)) return
 
@@ -163,11 +174,13 @@ class ExternalAudioController(
 
                 val segmentBytes = segmentBytesResult.getOrThrow()
                 val frames = AdtsAudioFrameExtractor.extractFrames(segmentBytes)
-
+                if (frames.isEmpty()) {
+                    handleFailure(generation, "المقطع ليس ADTS/AAC خاماً مدعوماً؛ فك TS اليدوي غير صالح لهذا المسار", false)
+                    return
+                }
                 for (frame in frames) {
                     if (!shouldContinue(generation)) return
-
-                    decoder.configure(frame.sampleRate, frame.channelCount, frame.csd0)
+                    if (!decoder.configure(frame.sampleRate, frame.channelCount, frame.csd0)) return
                     decoder.decodeFrame(frame)
                 }
             }
@@ -190,8 +203,8 @@ class ExternalAudioController(
         if (!shouldContinue(generation)) return
 
         releaseComponents()
-        retryAttempt = (retryAttempt + 1).coerceAtMost(6)
-        val willRetry = retryAttempt <= 6 && isRunning
+        val willRetry = retryAttempt < 3 && isRunning
+        if (willRetry) retryAttempt++ else isRunning = false
 
         mainHandler.post {
             listener.onExternalAudioError(errorMessage, willRetry)
