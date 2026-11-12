@@ -133,7 +133,7 @@ class ExternalAudioController(
             playlist.unsupportedReason?.let { handleFailure(generation, it, false); return }
             val segments = playlist.segments
 
-            val newSegments = segments.filter { it.uri !in processedSegments }
+            val newSegments = segments.filter { "${it.sequenceNumber}|${it.uri}" !in processedSegments }
             if (newSegments.isEmpty() && !playlist.isEndList) {
                 emptyPolls++
                 if (emptyPolls >= 4) {
@@ -161,10 +161,11 @@ class ExternalAudioController(
                     }
                 }
 
-                processedSegments.add(segment.uri)
+                val segmentKey = "${segment.sequenceNumber}|${segment.uri}"
+                processedSegments.add(segmentKey)
                 if (processedSegments.size > 200) {
                     processedSegments.clear()
-                    processedSegments.add(segment.uri)
+                    processedSegments.add(segmentKey)
                 }
 
                 val segmentBytesResult = downloader.downloadBytes(segment.uri)
