@@ -14,7 +14,8 @@ data class HlsAudioMediaPlaylist(
     val targetDurationSec: Double,
     val mediaSequence: Long,
     val segments: List<HlsAudioSegment>,
-    val isEndList: Boolean
+    val isEndList: Boolean,
+    val unsupportedReason: String? = null
 )
 
 object HlsAudioPlaylistParser {
@@ -23,6 +24,7 @@ object HlsAudioPlaylistParser {
         var targetDuration = 5.0
         var mediaSequence = 0L
         var isEndList = false
+        var unsupportedReason: String? = null
         val segments = mutableListOf<HlsAudioSegment>()
 
         var currentDuration = 0.0
@@ -33,7 +35,14 @@ object HlsAudioPlaylistParser {
             val line = rawLine.trim()
             if (line.isEmpty()) continue
 
-            if (line.startsWith("#EXT-X-TARGETDURATION:")) {
+            if (line.startsWith("#EXT-X-KEY:") &&
+                !line.substringAfter(":").contains("METHOD=NONE", ignoreCase = true)) {
+                unsupportedReason = "تشفير HLS غير مدعوم في مسار الصوت الخارجي"
+            } else if (line.startsWith("#EXT-X-MAP:")) {
+                unsupportedReason = "مقاطع fMP4 التي تتطلب EXT-X-MAP غير مدعومة حالياً"
+            } else if (line.startsWith("#EXT-X-BYTERANGE:")) {
+                unsupportedReason = "مقاطع BYTERANGE غير مدعومة حالياً"
+            } else if (line.startsWith("#EXT-X-TARGETDURATION:")) {
                 targetDuration = line.substringAfter(":").trim().toDoubleOrNull() ?: 5.0
             } else if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
                 mediaSequence = line.substringAfter(":").trim().toLongOrNull() ?: 0L
@@ -61,7 +70,8 @@ object HlsAudioPlaylistParser {
             targetDurationSec = targetDuration,
             mediaSequence = mediaSequence,
             segments = segments,
-            isEndList = isEndList
+            isEndList = isEndList,
+            unsupportedReason = unsupportedReason
         )
     }
 }

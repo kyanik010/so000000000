@@ -199,11 +199,11 @@ class ExternalAudioController(
         }
     }
 
-    private fun handleFailure(generation: Long, errorMessage: String) {
+    private fun handleFailure(generation: Long, errorMessage: String, retryable: Boolean = true) {
         if (!shouldContinue(generation)) return
 
         releaseComponents()
-        val willRetry = retryAttempt < 3 && isRunning
+        val willRetry = retryable && retryAttempt < 3 && isRunning
         if (willRetry) retryAttempt++ else isRunning = false
 
         mainHandler.post {
@@ -219,8 +219,6 @@ class ExternalAudioController(
                     startPipelineSession(generation, currentSourceUrl)
                 }
             }, delayMs)
-        } else {
-            stop()
         }
     }
 
