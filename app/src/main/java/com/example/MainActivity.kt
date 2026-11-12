@@ -1387,7 +1387,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun ensureExternalAudioController(): com.example.audio.ExternalAudioController {
-        return externalAudioController ?: com.example.audio.ExternalAudioController(object : com.example.audio.ExternalAudioEventListener {
+        return externalAudioController ?: com.example.audio.ExternalAudioController(this, object : com.example.audio.ExternalAudioEventListener {
             override fun onExternalAudioBuffering() {
                 runOnUiThread {
                     webView?.evaluateJavascript("window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
@@ -1408,6 +1408,9 @@ class MainActivity : ComponentActivity() {
                             nativeTrackSelectionBeforeExternalAudio = primary.trackSelectionParameters
                             if (!nativeVideoMuted) nativeVideoVolumeBeforeExternalAudio = primary.volume
                         }
+                        primary.trackSelectionParameters = primary.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                            .build()
                         if (!nativeVideoMuted) primary.volume = 0f
                     }
                 }
@@ -1416,7 +1419,11 @@ class MainActivity : ComponentActivity() {
             override fun onExternalAudioError(message: String, willRetry: Boolean) {
                 runOnUiThread {
                     android.util.Log.w("SONIXExternalAudio", "External audio error: $message, willRetry: $willRetry")
-                    // Immediately restore A's audio if error occurs so user is never left in silence
+                    // Restore A while B is retrying; never leave the viewer with silent video.
+                    nativeTrackSelectionBeforeExternalAudio?.let { originalParameters ->
+                        nativePlayer?.trackSelectionParameters = originalParameters
+                    }
+                    nativeTrackSelectionBeforeExternalAudio = null
                     if (!nativeVideoMuted) {
                         nativePlayer?.volume = nativeVideoVolumeBeforeExternalAudio
                     }
