@@ -273,6 +273,7 @@ class MainActivity : ComponentActivity() {
     private var liveRecoveryRunnable: Runnable? = null
     private var nativePlayerCornerRadiusPx = 0f
     @Volatile private var immersiveVideoFullscreen = false
+    @Volatile private var nativeVideoResizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
     private var activeMediaUri: Uri? = null
     private var activeSubtitleFile: File? = null
     private var activeSubtitleSourceFile: File? = null
@@ -709,7 +710,7 @@ class MainActivity : ComponentActivity() {
                 ).also { nativePlayerView = it }
             playerView.apply {
                 setUseController(false)
-                setResizeMode(if (immersiveVideoFullscreen) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT)
+                setResizeMode(nativeVideoResizeMode)
                 setKeepContentOnPlayerReset(true)
                 setShutterBackgroundColor(Color.TRANSPARENT)
                 setBackgroundColor(Color.TRANSPARENT)
@@ -868,9 +869,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    val httpFailure = generateSequence(error as Throwable?) { it.cause }
+                        .filterIsInstance<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()
+                        .firstOrNull()
                     val detail = buildString {
                         append("خطأ المشغل: ")
                         append(error.errorCodeName)
+                        if (httpFailure != null) append(" (HTTP ${httpFailure.responseCode})")
                         error.message?.takeIf { it.isNotBlank() }?.let {
                             append(" — ")
                             append(it)
@@ -939,12 +944,7 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 immersiveVideoFullscreen = enabled
                 applyVideoFullscreenSystemUi()
-                nativePlayerView?.resizeMode = if (enabled) {
-                    // Fill ultrawide phone displays in fullscreen; restore the full frame in preview.
-                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                } else {
-                    AspectRatioFrameLayout.RESIZE_MODE_FIT
-                }
+                nativePlayerView?.resizeMode = nativeVideoResizeMode
                 // System-bar visibility changes resize the WebView asynchronously. Re-read
                 // its final viewport after the inset/layout pass and realign the native surface.
                 webView?.postDelayed({
@@ -953,6 +953,22 @@ class MainActivity : ComponentActivity() {
                         null
                     )
                 }, 250L)
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun setVideoResizeMode(mode: Int) {
+            val resizeMode = when (mode) {
+                1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                3 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                4 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT
+                else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+            }
+            runOnUiThread {
+                nativeVideoResizeMode = resizeMode
+                nativePlayerView?.resizeMode = resizeMode
+                android.util.Log.i("SONIXPlayback", "setVideoResizeMode mode=$mode native=$resizeMode fullscreen=$immersiveVideoFullscreen")
             }
         }
 
