@@ -56,6 +56,37 @@ class ExternalAudioPipelineTest {
     }
 
     @Test
+    fun testHlsMasterPlaylist_requiresAudioGroupLinkedToAStreamVariant() {
+        val manifestWithoutVariantAudioGroup = """
+            #EXTM3U
+            #EXT-X-MEDIA:URI="audio.m3u8",NAME="Arabic",GROUP-ID="audio",TYPE=AUDIO
+            #EXT-X-STREAM-INF:BANDWIDTH=1200000
+            video.m3u8
+        """.trimIndent()
+        val parsed = HlsMasterPlaylistParser.parse(
+            "https://example.test/master.m3u8",
+            manifestWithoutVariantAudioGroup
+        )
+        assertTrue(parsed.audioRenditions.isNotEmpty())
+        assertEquals(null, HlsMasterPlaylistParser.selectBestAudioRendition(parsed))
+    }
+
+    @Test
+    fun testHlsMasterPlaylist_handlesAttributeOrderAndQuotedCommas() {
+        val manifest = """
+            #EXTM3U
+            #EXT-X-MEDIA:URI="audio,main.m3u8",NAME="Arabic, Main",GROUP-ID="aud",TYPE=AUDIO,DEFAULT=YES
+            #EXT-X-STREAM-INF:AUDIO="aud",BANDWIDTH=1200000
+            video.m3u8
+        """.trimIndent()
+        val parsed = HlsMasterPlaylistParser.parse("https://example.test/master.m3u8", manifest)
+        val selected = HlsMasterPlaylistParser.selectBestAudioRendition(parsed)
+        assertNotNull(selected)
+        assertEquals("Arabic, Main", selected?.name)
+        assertEquals("https://example.test/audio,main.m3u8", selected?.uri)
+    }
+
+    @Test
     fun testHlsUriResolution_rfc8216() {
         val base = "http://cdn.example.com/live/ch1/master.m3u8"
 

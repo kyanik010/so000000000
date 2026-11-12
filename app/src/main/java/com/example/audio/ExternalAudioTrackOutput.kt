@@ -29,6 +29,10 @@ class ExternalAudioTrackOutput(
 
         release()
 
+        if (sampleRate <= 0 || channelCount !in 1..2) {
+            Log.e(tag, "Unsupported PCM output format: ${sampleRate}Hz / ${channelCount}ch")
+            return false
+        }
         val channelMask = if (channelCount == 1) {
             AudioFormat.CHANNEL_OUT_MONO
         } else {

@@ -6,7 +6,6 @@ import android.util.Log
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.concurrent.atomic.AtomicBoolean
 
 interface ExternalAudioEventListener {
     fun onExternalAudioBuffering()
@@ -38,8 +37,6 @@ class ExternalAudioController(
     @Volatile private var retryAttempt: Int = 0
     @Volatile private var failurePending: Boolean = false
     @Volatile private var sessionGeneration: Long = 0L
-
-    private val retryRunnable = AtomicBoolean(false)
 
     fun isActive(): Boolean = isRunning
     fun isPausedState(): Boolean = isPaused
@@ -90,7 +87,14 @@ class ExternalAudioController(
             val targetMediaPlaylistUri = if (HlsMasterPlaylistParser.isMasterPlaylist(content)) {
                 val masterPlaylist = HlsMasterPlaylistParser.parse(url, content)
                 val bestAudio = HlsMasterPlaylistParser.selectBestAudioRendition(masterPlaylist)
-                    ?: throw IllegalArgumentException("لا يوجد مسار صوت مستقل صالح مرتبط بمجموعة AUDIO في القائمة الرئيسية")
+                if (bestAudio == null) {
+                    handleFailure(
+                        generation,
+                        "القائمة الرئيسية لا تحتوي مسار صوت مستقلًا صالحًا مرتبطًا بمجموعة AUDIO",
+                        false
+                    )
+                    return
+                }
                 Log.i(tag, "Discovered independent audio rendition: ${bestAudio.name} -> ${bestAudio.uri}")
                 bestAudio.uri
             } else url
@@ -132,6 +136,10 @@ class ExternalAudioController(
             val playlist = HlsAudioPlaylistParser.parseMediaPlaylist(mediaPlaylistUri, playlistContent)
             playlist.unsupportedReason?.let { handleFailure(generation, it, false); return }
             val segments = playlist.segments
+            if (segments.isEmpty()) {
+                handleFailure(generation, "قائمة الصوت لا تحتوي أي مقاطع HLS قابلة للتشغيل", false)
+                return
+            }
 
             val newSegments = segments.filter { "${it.sequenceNumber}|${it.uri}" !in processedSegments }
             if (newSegments.isEmpty() && !playlist.isEndList) {
