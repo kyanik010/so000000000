@@ -1436,15 +1436,15 @@ class MainActivity : ComponentActivity() {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(5000, 30000, 1500, 5000)
+            .setBufferDurationsMs(1500, 10000, 250, 750)
             .build()
         // Use the same IPTV HTTP identity and redirect handling as the primary
         // video player. Some providers reject ExoPlayer's default User-Agent.
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("SONIX-TV/1.0")
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(30000)
+            .setConnectTimeoutMs(8000)
+            .setReadTimeoutMs(12000)
         val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
         val audioPlayer = ExoPlayer.Builder(this)
             .setLoadControl(loadControl)
@@ -1517,6 +1517,14 @@ class MainActivity : ComponentActivity() {
             externalAudioRetryAttempt >= 2
         ) {
             startExternalAudioExtractionFallback(generation)
+            return
+        }
+        if (externalAudioRetryAttempt >= 3) {
+            externalAudioActive = false
+            webView?.evaluateJavascript(
+                "window.onExternalAudioError && window.onExternalAudioError('تعذر تشغيل مصدر الصوت بعد 3 محاولات', false)",
+                null
+            )
             return
         }
         val delayMs = externalAudioRetryDelayMs(externalAudioRetryAttempt)
