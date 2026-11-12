@@ -7,7 +7,9 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.io.InputStreamReader
+import java.util.zip.GZIPInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -88,6 +90,7 @@ class AudioM3uCatalog(context: Context) {
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", "SONIX-TV/1.0")
             setRequestProperty("Accept", "audio/x-mpegurl, application/vnd.apple.mpegurl, text/plain, */*")
+            setRequestProperty("Accept-Encoding", "gzip")
         }
         try {
             val code = connection.responseCode
@@ -95,14 +98,17 @@ class AudioM3uCatalog(context: Context) {
             val result = JSONArray()
             var pendingInfo: String? = null
             var pendingGroup = ""
-            var lineCount = 0
             var channelNumber = 0
             var totalChars = 0
 
-            BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
+            val responseStream: InputStream = if (connection.contentEncoding.equals("gzip", ignoreCase = true)) {
+                GZIPInputStream(connection.inputStream, 64 * 1024)
+            } else {
+                connection.inputStream
+            }
+            BufferedReader(InputStreamReader(responseStream, Charsets.UTF_8), 64 * 1024).use { reader ->
                 while (true) {
                     val rawLine = reader.readLine() ?: break
-                    lineCount++
                     totalChars += rawLine.length
                     if (totalChars > 128 * 1024 * 1024) throw IllegalStateException("حجم قائمة M3U تجاوز الحد الآمن (128 ميغابايت)")
                     val line = rawLine.trim().removePrefix("\uFEFF")
@@ -118,15 +124,17 @@ class AudioM3uCatalog(context: Context) {
                         }
                         line.startsWith("#") -> Unit
                         pendingInfo != null -> {
-                            val absoluteUrl = try { URL(URL(rawUrl), line).toString() } catch (_: Exception) { "" }
-                            val uri = try { URL(absoluteUrl) } catch (_: Exception) { null }
-                            if (uri != null && (uri.protocol == "http" || uri.protocol == "https") && uri.host.isNotBlank()) {
-                                val info = pendingInfo.orEmpty()
-                                val displayName = info.substringAfterLast(',', "").trim()
-                                val name = attribute(info, "tvg-name").ifBlank { displayName }
-                                val group = pendingGroup.ifBlank { attribute(info, "group-title") }
-                                val classification = AudioSourceClassifier.classify(name, group)
-                                if (classification != AudioChannelGroup.OTHER) {
+                            val info = pendingInfo.orEmpty()
+                            val displayName = info.substringAfterLast(',', "").trim()
+                            val name = attribute(info, "tvg-name").ifBlank { displayName }
+                            val group = pendingGroup.ifBlank { attribute(info, "group-title") }
+                            val classification = AudioSourceClassifier.classify(name, group)
+
+                            // Filter unrelated IPTV entries before the expensive URL parsing.
+                            if (classification != AudioChannelGroup.OTHER) {
+                                val absoluteUrl = try { URL(URL(rawUrl), line).toString() } catch (_: Exception) { "" }
+                                val uri = try { URL(absoluteUrl) } catch (_: Exception) { null }
+                                if (uri != null && (uri.protocol == "http" || uri.protocol == "https") && uri.host.isNotBlank()) {
                                     channelNumber++
                                     val extension = uri.path.substringAfterLast('.', "").lowercase()
                                         .takeIf { it.matches(Regex("[a-z0-9]{1,8}")) } ?: "m3u8"
@@ -146,7 +154,6 @@ class AudioM3uCatalog(context: Context) {
                             pendingGroup = ""
                         }
                     }
-                    if (lineCount > 250000) throw IllegalStateException("عدد أسطر قائمة M3U تجاوز الحد المسموح")
                 }
             }
             return result
