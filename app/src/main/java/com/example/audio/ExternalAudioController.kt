@@ -1,11 +1,21 @@
 package com.example.audio
 
+import android.content.Context
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.Future
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 
 interface ExternalAudioEventListener {
     fun onExternalAudioBuffering()
@@ -15,303 +25,238 @@ interface ExternalAudioEventListener {
     fun onExternalAudioDetached()
 }
 
+/**
+ * Independent audio player for source B.
+ *
+ * Keep the source in Media3's native playback pipeline: do not download complete HLS
+ * segments, decode them manually, or route PCM through AudioTrack. This preserves
+ * Media3's support for HLS, MPEG-TS and ordinary audio URLs.
+ */
+@OptIn(UnstableApi::class)
 class ExternalAudioController(
+    context: Context,
     private val listener: ExternalAudioEventListener
-) : AudioDecoderCallback, AudioTrackPlaybackListener {
-
-    private val tag = "SONIXExternalAudioCtrl"
+) {
+    private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val pipelineExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private var currentPipelineJob: Future<*>? = null
-
-    private val downloader = HlsAudioSegmentDownloader()
-    private val decoder = ExternalAudioMediaCodecDecoder(this)
-    private val segmentExtractor = HlsAudioSegmentExtractor(decoder)
-    private val audioTrackOutput = ExternalAudioTrackOutput(this)
+    private val tag = "SONIXExternalAudio"
 
     @Volatile private var isRunning = false
     @Volatile private var isPaused = false
-    @Volatile private var currentSourceUrl: String = ""
-    @Volatile private var syncOffsetMs: Long = 0L
-    @Volatile private var currentVolume: Float = 1.0f
-    @Volatile private var retryAttempt: Int = 0
-    @Volatile private var failurePending: Boolean = false
-    @Volatile private var sessionGeneration: Long = 0L
+    @Volatile private var currentSourceUrl = ""
+    @Volatile private var currentVolume = 1f
+    @Volatile private var syncOffsetMs = 0L
+    private var retryAttempt = 0
+    private var generation = 0L
+    private var player: ExoPlayer? = null
+    private var retryRunnable: Runnable? = null
+    private var readyReported = false
 
     fun isActive(): Boolean = isRunning
     fun isPausedState(): Boolean = isPaused
 
     @Synchronized
     fun start(sourceUrl: String) {
-        val trimmed = sourceUrl.trim()
-        if (trimmed.isEmpty()) return
-
-        sessionGeneration++
-        val gen = sessionGeneration
+        val url = sourceUrl.trim()
+        if (url.isEmpty()) {
+            listener.onExternalAudioError("رابط مصدر الصوت الخارجي فارغ", false)
+            return
+        }
+        generation++
+        val activeGeneration = generation
+        currentSourceUrl = url
         retryAttempt = 0
-        failurePending = false
-        currentSourceUrl = trimmed
         isRunning = true
         isPaused = false
-
-        mainHandler.post { listener.onExternalAudioBuffering() }
-        startPipelineSession(gen, trimmed)
+        cancelRetry()
+        releasePlayer()
+        listener.onExternalAudioBuffering()
+        startPlayer(activeGeneration, url)
     }
 
-    private fun startPipelineSession(generation: Long, url: String) {
-        currentPipelineJob?.cancel(true)
-        currentPipelineJob = pipelineExecutor.submit {
-            runPipeline(generation, url)
-        }
-    }
+    private fun startPlayer(activeGeneration: Long, url: String) {
+        if (!isCurrent(activeGeneration)) return
+        releasePlayer()
+        readyReported = false
 
-    private fun runPipeline(generation: Long, url: String) {
-        if (!shouldContinue(generation)) return
-
-        Log.i(tag, "Starting external audio session $generation for URL: $url")
         try {
-            // Step 1: Fetch initial manifest / stream content
-            val textResult = downloader.downloadText(url)
-            if (!shouldContinue(generation)) return
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent("SONIX-TV/1.0")
+                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(15_000)
+                .setReadTimeoutMs(30_000)
 
-            if (textResult.isFailure) {
-                handleFailure(generation, "فشل الاتصال بمصدر الصوت الخارجي: ${textResult.exceptionOrNull()?.message}")
-                return
-            }
+            val loadControl = DefaultLoadControl.Builder()
+                .setBufferDurationsMs(5_000, 30_000, 1_500, 5_000)
+                .build()
 
-            val content = textResult.getOrThrow()
-            if (!content.trimStart().startsWith("#EXTM3U")) {
-                handleFailure(generation, "المصدر ليس قائمة HLS بصيغة m3u8؛ لا يمكن قراءة بث TS مباشر كنص", false)
-                return
-            }
-            val targetMediaPlaylistUri = if (HlsMasterPlaylistParser.isMasterPlaylist(content)) {
-                val masterPlaylist = HlsMasterPlaylistParser.parse(url, content)
-                val bestAudio = HlsMasterPlaylistParser.selectBestAudioRendition(masterPlaylist)
-                if (bestAudio == null) {
-                    handleFailure(
-                        generation,
-                        "القائمة الرئيسية لا تحتوي مسار صوت مستقلًا صالحًا مرتبطًا بمجموعة AUDIO",
-                        false
-                    )
-                    return
-                }
-                Log.i(tag, "Discovered independent audio rendition: ${bestAudio.name} -> ${bestAudio.uri}")
-                bestAudio.uri
-            } else url
+            val audioPlayer = ExoPlayer.Builder(appContext)
+                .setLoadControl(loadControl)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
+                .build()
 
-            // Step 2: Poll and play media playlist
-            runMediaPlaylistLoop(generation, targetMediaPlaylistUri)
-        } catch (e: Exception) {
-            Log.e(tag, "Pipeline exception in session $generation", e)
-            handleFailure(generation, e.message ?: "خطأ غير متوقع أثناء معالجة الصوت الخارجي")
-        }
-    }
+            player = audioPlayer
+            audioPlayer.trackSelectionParameters =
+                audioPlayer.trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                    .build()
+            audioPlayer.volume = currentVolume
 
-    private fun runMediaPlaylistLoop(generation: Long, mediaPlaylistUri: String) {
-        val processedSegments = HashSet<String>()
-        var emptyPolls = 0
-
-        while (shouldContinue(generation)) {
-            while (isPaused && shouldContinue(generation)) {
-                try {
-                    Thread.sleep(100)
-                } catch (_: InterruptedException) {
-                    return
-                }
-            }
-
-            val playlistResult = downloader.downloadText(mediaPlaylistUri)
-            if (!shouldContinue(generation)) return
-
-            if (playlistResult.isFailure) {
-                handleFailure(generation, "تعذر تحميل قائمة مقاطع الصوت")
-                return
-            }
-
-            val playlistContent = playlistResult.getOrThrow()
-            if (!playlistContent.trimStart().startsWith("#EXTM3U")) {
-                handleFailure(generation, "رابط مسار الصوت لا يعيد قائمة HLS صالحة", false)
-                return
-            }
-            val playlist = HlsAudioPlaylistParser.parseMediaPlaylist(mediaPlaylistUri, playlistContent)
-            playlist.unsupportedReason?.let { handleFailure(generation, it, false); return }
-            val segments = playlist.segments
-            if (segments.isEmpty()) {
-                handleFailure(generation, "قائمة الصوت لا تحتوي أي مقاطع HLS قابلة للتشغيل", false)
-                return
-            }
-
-            val newSegments = segments.filter { "${it.sequenceNumber}|${it.uri}" !in processedSegments }
-            if (newSegments.isEmpty() && !playlist.isEndList) {
-                emptyPolls++
-                if (emptyPolls >= 4) {
-                    handleFailure(generation, "قائمة الصوت المباشر لا تقدم مقاطع جديدة", true)
-                    return
-                }
-                val sleepTime = ((playlist.targetDurationSec * 1000) / 2).toLong().coerceIn(1000L, 5000L)
-                try {
-                    Thread.sleep(sleepTime)
-                } catch (_: InterruptedException) {
-                    return
-                }
-                continue
-            }
-
-            if (newSegments.isNotEmpty()) emptyPolls = 0
-            for (segment in newSegments) {
-                if (!shouldContinue(generation)) return
-
-                while (isPaused && shouldContinue(generation)) {
-                    try {
-                        Thread.sleep(100)
-                    } catch (_: InterruptedException) {
-                        return
+            audioPlayer.addListener(object : Player.Listener {
+                override fun onPlaybackStateChanged(state: Int) {
+                    if (!isCurrentPlayer(activeGeneration, audioPlayer)) return
+                    when (state) {
+                        Player.STATE_BUFFERING -> listener.onExternalAudioBuffering()
+                        Player.STATE_READY -> {
+                            cancelRetry()
+                            retryAttempt = 0
+                            if (!readyReported) {
+                                readyReported = true
+                                applySyncOffset(audioPlayer)
+                                // Player B is prepared and its audio renderer/track is ready.
+                                listener.onExternalAudioFirstPcmVerified()
+                                if (!isPaused) listener.onExternalAudioPlaying()
+                            }
+                        }
+                        Player.STATE_ENDED -> scheduleRetry(
+                            activeGeneration,
+                            "انتهى مصدر الصوت الخارجي"
+                        )
+                        Player.STATE_IDLE -> Unit
                     }
                 }
 
-                val segmentKey = "${segment.sequenceNumber}|${segment.uri}"
-                processedSegments.add(segmentKey)
-                if (processedSegments.size > 200) {
-                    processedSegments.clear()
-                    processedSegments.add(segmentKey)
+                override fun onPlayerError(error: PlaybackException) {
+                    if (!isCurrentPlayer(activeGeneration, audioPlayer)) return
+                    Log.w(tag, "Secondary audio playback failed: ${error.errorCodeName}", error)
+                    scheduleRetry(
+                        activeGeneration,
+                        "تعذر تشغيل مصدر الصوت: ${error.errorCodeName}"
+                    )
                 }
+            })
 
-                val segmentBytesResult = downloader.downloadBytes(segment.uri)
-                if (!shouldContinue(generation)) return
-                if (segmentBytesResult.isFailure) {
-                    throw segmentBytesResult.exceptionOrNull() ?: Exception("تعذر تحميل مقطع الصوت")
-                }
-                val segmentBytes = segmentBytesResult.getOrThrow()
-                // MediaExtractor demuxes the downloaded TS segment and exposes only its audio track.
-                val samples = segmentExtractor.decode(segmentBytes)
-                if (samples <= 0) throw IllegalStateException("لم ينتج مقطع الصوت عينات قابلة للتشغيل")
+            val uri = Uri.parse(url)
+            val extension = uri.lastPathSegment
+                ?.substringAfterLast('.', "")
+                ?.lowercase()
+                .orEmpty()
+            val mimeType = when (extension) {
+                "m3u8" -> MimeTypes.APPLICATION_M3U8
+                "mpd" -> MimeTypes.APPLICATION_MPD
+                "ts", "mpegts" -> MimeTypes.VIDEO_MP2T
+                "aac" -> MimeTypes.AUDIO_AAC
+                "mp3" -> MimeTypes.AUDIO_MPEG
+                else -> null
             }
+            val item = MediaItem.Builder()
+                .setUri(uri)
+                .apply { if (mimeType != null) setMimeType(mimeType) }
+                .build()
 
-            if (playlist.isEndList) {
-                Log.i(tag, "HLS Audio playlist ended (VOD/Finished)")
-                break
-            }
-
-            val pollDelay = (playlist.targetDurationSec * 1000 * 0.75).toLong().coerceIn(1000L, 6000L)
-            try {
-                Thread.sleep(pollDelay)
-            } catch (_: InterruptedException) {
-                return
-            }
+            audioPlayer.setMediaItem(item)
+            audioPlayer.prepare()
+            if (!isPaused) audioPlayer.play()
+            Log.i(tag, "Started independent Media3 audio player for $url")
+        } catch (error: Exception) {
+            Log.e(tag, "Could not create secondary audio player", error)
+            scheduleRetry(activeGeneration, error.message ?: "تعذر بدء مشغل الصوت")
         }
     }
 
-    private fun handleFailure(generation: Long, errorMessage: String, retryable: Boolean = true) {
-        if (!shouldContinue(generation) || failurePending) return
-        failurePending = true
-
-        releaseComponents()
-        val willRetry = retryable && retryAttempt < 3 && isRunning
-        if (willRetry) retryAttempt++ else isRunning = false
-
-        mainHandler.post {
-            listener.onExternalAudioError(errorMessage, willRetry)
+    private fun scheduleRetry(activeGeneration: Long, message: String) {
+        if (!isCurrent(activeGeneration)) return
+        releasePlayer()
+        retryAttempt++
+        val willRetry = retryAttempt <= 3
+        listener.onExternalAudioError(message, willRetry)
+        if (!willRetry) {
+            isRunning = false
+            return
         }
-
-        if (willRetry) {
-            val delayMs = calculateRetryDelayMs(retryAttempt)
-            Log.i(tag, "Scheduling audio retry #$retryAttempt in $delayMs ms")
-            mainHandler.postDelayed({
-                if (shouldContinue(generation) && isRunning) {
-                    failurePending = false
-                    mainHandler.post { listener.onExternalAudioBuffering() }
-                    startPipelineSession(generation, currentSourceUrl)
-                }
-            }, delayMs)
+        val delayMs = when (retryAttempt) {
+            1 -> 1_000L
+            2 -> 2_000L
+            else -> 4_000L
         }
+        listener.onExternalAudioBuffering()
+        val retry = Runnable {
+            retryRunnable = null
+            if (isCurrent(activeGeneration)) startPlayer(activeGeneration, currentSourceUrl)
+        }
+        retryRunnable = retry
+        mainHandler.postDelayed(retry, delayMs)
     }
 
-    private fun shouldContinue(generation: Long): Boolean {
-        return generation == sessionGeneration && isRunning && !Thread.currentThread().isInterrupted
+    private fun applySyncOffset(activePlayer: ExoPlayer) {
+        val offset = syncOffsetMs
+        try {
+            if (offset > 0L) {
+                val position = activePlayer.currentPosition
+                if (position > offset) activePlayer.seekTo(position - offset)
+            } else if (offset < 0L) {
+                activePlayer.seekTo(activePlayer.currentPosition + kotlin.math.abs(offset))
+            }
+        } catch (error: Exception) {
+            Log.w(tag, "External audio sync offset could not be applied", error)
+        }
     }
 
     @Synchronized
     fun pause() {
         isPaused = true
-        audioTrackOutput.pause()
+        player?.pause()
     }
 
     @Synchronized
     fun resume() {
         isPaused = false
-        if (isRunning) {
-            audioTrackOutput.play()
-        }
+        if (isRunning) player?.play()
     }
 
     @Synchronized
     fun setVolume(volume: Float) {
-        currentVolume = volume.coerceIn(0.0f, 1.0f)
-        audioTrackOutput.setVolume(currentVolume)
+        currentVolume = volume.coerceIn(0f, 1f)
+        player?.volume = currentVolume
     }
 
     @Synchronized
     fun setSyncOffset(offsetMs: Long) {
-        syncOffsetMs = offsetMs.coerceIn(-10000L, 10000L)
+        syncOffsetMs = offsetMs.coerceIn(-10_000L, 10_000L)
+        player?.let(::applySyncOffset)
     }
 
     @Synchronized
     fun stop() {
-        sessionGeneration++
+        generation++
         isRunning = false
         isPaused = false
-        currentPipelineJob?.cancel(true)
-        currentPipelineJob = null
-        releaseComponents()
-        mainHandler.post { listener.onExternalAudioDetached() }
+        cancelRetry()
+        releasePlayer()
+        listener.onExternalAudioDetached()
     }
 
-    private fun releaseComponents() {
-        decoder.release()
-        audioTrackOutput.release()
+    private fun isCurrent(activeGeneration: Long): Boolean =
+        activeGeneration == generation && isRunning
+
+    private fun isCurrentPlayer(activeGeneration: Long, candidate: ExoPlayer): Boolean =
+        isCurrent(activeGeneration) && player === candidate
+
+    private fun cancelRetry() {
+        retryRunnable?.let(mainHandler::removeCallbacks)
+        retryRunnable = null
     }
 
-    // AudioDecoderCallback
-    override fun onAudioFormatChanged(sampleRate: Int, channelCount: Int) {
-        if (!audioTrackOutput.initialize(sampleRate, channelCount)) {
-            handleFailure(sessionGeneration, "تعذرت تهيئة AudioTrack للصوت الخارجي", false)
-            return
-        }
-        audioTrackOutput.setVolume(currentVolume)
-    }
-
-    override fun onPcmDataDecoded(pcmData: ByteArray, presentationTimeUs: Long) {
-        if (!isPaused && isRunning) {
-            audioTrackOutput.writePcm(pcmData)
-        }
-    }
-
-    override fun onDecoderError(error: Exception) {
-        handleFailure(sessionGeneration, "خطأ في فك ترميز الصوت: ${error.message}")
-    }
-
-    // AudioTrackPlaybackListener
-    override fun onFirstPcmSamplePlayed() {
-        mainHandler.post {
-            listener.onExternalAudioFirstPcmVerified()
-            listener.onExternalAudioPlaying()
-        }
-    }
-
-    override fun onAudioTrackUnderrun() {
-        Log.w(tag, "AudioTrack underrun detected")
-    }
-
-    companion object {
-        fun calculateRetryDelayMs(attempt: Int): Long {
-            return when {
-                attempt <= 1 -> 1000L
-                attempt == 2 -> 2000L
-                attempt == 3 -> 4000L
-                attempt == 4 -> 8000L
-                attempt == 5 -> 16000L
-                else -> 30000L
+    private fun releasePlayer() {
+        val old = player
+        player = null
+        if (old != null) {
+            try {
+                old.stop()
+                old.clearMediaItems()
+            } catch (_: Exception) {
             }
+            old.release()
         }
     }
 }
