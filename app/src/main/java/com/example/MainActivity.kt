@@ -2440,7 +2440,7 @@ private class SonixBackgroundDrawable : Drawable() {
 
 
 internal fun externalAudioRetryDelayMs(attempt: Int): Long {
-    val delays = longArrayOf(1000L, 2000L, 4000L)
+    val delays = longArrayOf(1000L, 2000L, 4000L, 8000L, 16000L, 30000L)
     return delays[(attempt.coerceAtLeast(1) - 1).coerceAtMost(delays.lastIndex)]
 }
 
