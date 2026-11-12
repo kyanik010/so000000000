@@ -380,6 +380,7 @@ class MainActivity : ComponentActivity() {
     private var subtitlePickerGeneration = 0L
     private val subtitlePickerRequestCode = 7412
     private var resumeNativePlayerAfterPause = false
+    private var resumeExternalAudioAfterPause = false
     @Volatile private var nativePlayerActive = false
     @Volatile private var nativePlayerPlaying = false
     private var secondaryAudioPlayer: ExoPlayer? = null
@@ -2311,8 +2312,9 @@ class MainActivity : ComponentActivity() {
         webView?.onResume()
         if (::sonixControlClient.isInitialized && sonixControlPageReady) sonixControlClient.sync()
         if (resumeNativePlayerAfterPause) nativePlayer?.play()
-        if (resumeNativePlayerAfterPause && externalAudioActive) secondaryAudioPlayer?.play()
+        if (resumeExternalAudioAfterPause && externalAudioActive) secondaryAudioPlayer?.play()
         resumeNativePlayerAfterPause = false
+        resumeExternalAudioAfterPause = false
     }
 
     override fun onPause() {
@@ -2322,6 +2324,7 @@ class MainActivity : ComponentActivity() {
             null
         )
         resumeNativePlayerAfterPause = nativePlayer?.isPlaying == true
+        resumeExternalAudioAfterPause = secondaryAudioPlayer?.isPlaying == true
         nativePlayer?.pause()
         secondaryAudioPlayer?.pause()
         webView?.onPause()
