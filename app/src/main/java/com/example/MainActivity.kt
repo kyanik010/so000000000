@@ -387,9 +387,6 @@ class MainActivity : ComponentActivity() {
     private var externalAudioRetryAttempt = 0
     private var externalAudioGeneration = 0L
     private var externalAudioSourceUrl = ""
-    private var externalAudioStreamId = ""
-    private var externalAudioExtension = "ts"
-    private var externalAudioUsingExtractorFallback = false
     private var nativeTrackSelectionBeforeExternalAudio: TrackSelectionParameters? = null
     @Volatile private var externalAudioActive = false
     private var externalAudioSyncOffsetMs = 0L
@@ -1287,15 +1284,6 @@ class MainActivity : ComponentActivity() {
                         "امتداد البث الصوتي غير صالح"
                     }
 
-                    // Stop only a previous extraction fallback. The video player is never reset here.
-                    try {
-                        com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
-                            .stopIndependentAudio()
-                    } catch (_: Exception) {}
-
-                    externalAudioStreamId = normalizedStreamId
-                    externalAudioExtension = normalizedExtension
-                    externalAudioUsingExtractorFallback = false
                     val sourceUri = xtreamBridge.buildPlaybackUri("live", normalizedStreamId, normalizedExtension)
                     attachExternalAudioInternal(sourceUri.toString(), compareWithVideo = false)
                 } catch (error: Exception) {
@@ -1500,13 +1488,6 @@ class MainActivity : ComponentActivity() {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
         externalAudioRetryAttempt = (externalAudioRetryAttempt + 1).coerceAtMost(6)
-        if (!externalAudioUsingExtractorFallback &&
-            externalAudioStreamId.isNotBlank() &&
-            externalAudioRetryAttempt >= 2
-        ) {
-            startExternalAudioExtractionFallback(generation)
-            return
-        }
         val delayMs = externalAudioRetryDelayMs(externalAudioRetryAttempt)
         webView?.evaluateJavascript("window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
         val retry = Runnable {
@@ -1515,51 +1496,6 @@ class MainActivity : ComponentActivity() {
         }
         externalAudioRetryRunnable = retry
         externalAudioHandler.postDelayed(retry, delayMs)
-    }
-
-    private fun startExternalAudioExtractionFallback(generation: Long) {
-        if (generation != externalAudioGeneration || !externalAudioActive ||
-            externalAudioUsingExtractorFallback || externalAudioStreamId.isBlank()
-        ) return
-
-        externalAudioUsingExtractorFallback = true
-        webView?.evaluateJavascript(
-            "window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null
-        )
-        try {
-            val manager = com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge)
-            manager.startIndependentAudio(externalAudioStreamId, externalAudioExtension) { state, message, errCode, readyUrl ->
-                runOnUiThread {
-                    if (generation != externalAudioGeneration || !externalAudioActive) return@runOnUiThread
-                    val payload = JSONObject()
-                        .put("state", state.code)
-                        .put("message", message)
-                        .put("errorCode", errCode?.code ?: "")
-                        .toString()
-                    webView?.evaluateJavascript(
-                        "window.onAudioAddonStateChanged && window.onAudioAddonStateChanged($payload)", null
-                    )
-                    if (state == com.example.audio.AudioExtractionState.RESOURCE_READY && !readyUrl.isNullOrBlank()) {
-                        externalAudioSourceUrl = readyUrl
-                        externalAudioRetryAttempt = 0
-                        startExternalAudioAttempt(generation)
-                    } else if (state.name.startsWith("FAILED")) {
-                        val errorText = if (errCode != null) "$message (${errCode.code})" else message
-                        val jsonMessage = JSONObject.quote(errorText)
-                        detachExternalAudioInternal(false)
-                        webView?.evaluateJavascript(
-                            "window.onExternalAudioError && window.onExternalAudioError($jsonMessage)", null
-                        )
-                    }
-                }
-            }
-        } catch (error: Exception) {
-            val jsonMessage = JSONObject.quote(error.message ?: "تعذر تشغيل مسار استخراج الصوت الاحتياطي")
-            detachExternalAudioInternal(false)
-            webView?.evaluateJavascript(
-                "window.onExternalAudioError && window.onExternalAudioError($jsonMessage)", null
-            )
-        }
     }
 
     private fun setExternalAudioSyncOffsetInternal(offsetMs: Long) {
@@ -1588,15 +1524,9 @@ class MainActivity : ComponentActivity() {
         externalAudioGeneration++
         externalAudioRetryAttempt = 0
         externalAudioSourceUrl = ""
-        externalAudioStreamId = ""
-        externalAudioExtension = "ts"
-        externalAudioUsingExtractorFallback = false
         val wasActive = externalAudioActive
         externalAudioActive = false
         releaseSecondaryAudio()
-        try {
-            com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).stopIndependentAudio()
-        } catch (_: Exception) {}
         nativeTrackSelectionBeforeExternalAudio?.let { originalParameters ->
             nativePlayer?.trackSelectionParameters = originalParameters
         }
