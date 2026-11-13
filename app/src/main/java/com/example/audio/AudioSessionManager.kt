@@ -183,7 +183,7 @@ class AudioSessionManager {
             )
             onStateChange(
                 AudioExtractionState.DECODING_PCM,
-                "جارٍ فك ترميز الصوت إلى PCM",
+                "جارٍ تجهيز الصوت؛ تمرير AAC مباشرة عند توفر إطارات ADTS صالحة",
                 null,
                 null
             )
