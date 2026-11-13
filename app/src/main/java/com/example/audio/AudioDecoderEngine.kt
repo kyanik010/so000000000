@@ -146,7 +146,35 @@ class AudioDecoderEngine(
                     val rawFrames: List<ExtractedAudioFrame> = extractRawAdtsFrames(buffer, bytesRead, detectedSampleRate, detectedChannels)
                     for (frame in rawFrames) {
                         if (!isRunning.get()) break
-                        if (currentCodec == null) {
+
+                        detectedMimeType = frame.mimeType
+                        detectedSampleRate = frame.sampleRate
+                        detectedChannels = frame.channelCount
+
+                        // Raw AAC ADTS streams use the same compressed-frame pass-through
+                        // as AAC extracted from MPEG-TS.
+                        val canPassThroughAac =
+                            frame.mimeType == "audio/mp4a-latm" &&
+                            isValidAdtsFrame(frame.data) &&
+                            onEncodedAacFrame?.invoke(frame) == true
+
+                        if (canPassThroughAac) {
+                            try {
+                                currentCodec?.stop()
+                                currentCodec?.release()
+                            } catch (_: Exception) {}
+                            currentCodec = null
+                            activeMimeType = frame.mimeType
+                            onFormatDiscovered?.invoke(frame.sampleRate, frame.channelCount, frame.mimeType)
+                            continue
+                        }
+
+                        if (currentCodec == null || activeMimeType != frame.mimeType) {
+                            try {
+                                currentCodec?.stop()
+                                currentCodec?.release()
+                            } catch (_: Exception) {}
+                            activeMimeType = frame.mimeType
                             currentCodec = createAndStartDecoder(activeMimeType, frame.sampleRate, frame.channelCount)
                             if (currentCodec == null) {
                                 onError(AudioErrorCode.DECODER_UNAVAILABLE, "فشل تهيئة مفكك ترميز $activeMimeType")
