@@ -152,29 +152,34 @@ class AudioOnlyOutputEngine(
     private val totalBytesServed = AtomicLong(0)
     private val firstFrameReported = AtomicBoolean(false)
 
-    private var encoderCodec: MediaCodec? = null
+    @Volatile private var encoderCodec: MediaCodec? = null
 
-    init {
-        initEncoder()
-    }
-
+    /**
+     * Keep the AAC encoder unallocated until decoded PCM actually needs it.
+     * AAC/ADTS pass-through sessions therefore use neither a decoder nor an encoder.
+     */
     @Synchronized
     fun updateFormat(newSampleRate: Int, newChannels: Int) {
-        if (newSampleRate == sampleRate && encoderCodec != null) {
-            channels = newChannels
-            return
-        }
-        AudioLog.i(TAG, "Reconfiguring AAC encoder: rate=$newSampleRate, input channels=$newChannels -> stereo output")
+        if (newSampleRate == sampleRate && newChannels == channels) return
+
+        AudioLog.i(TAG, "Updating audio output format: rate=$newSampleRate, input channels=$newChannels -> stereo output")
         sampleRate = newSampleRate
         channels = newChannels
 
-        try {
-            encoderCodec?.stop()
-            encoderCodec?.release()
-        } catch (_: Exception) {}
-        encoderCodec = null
+        val existingEncoder = encoderCodec
+        if (existingEncoder != null) {
+            try {
+                existingEncoder.stop()
+                existingEncoder.release()
+            } catch (_: Exception) {}
+            encoderCodec = null
+            initEncoder()
+        }
+    }
 
-        initEncoder()
+    @Synchronized
+    private fun ensureEncoder() {
+        if (encoderCodec == null && isRunning.get()) initEncoder()
     }
 
     private fun initEncoder() {
@@ -243,6 +248,7 @@ class AudioOnlyOutputEngine(
     fun ingestPcm(pcmData: ByteArray, ptsUs: Long, inputChannels: Int = channels) {
         if (!isRunning.get() || pcmData.isEmpty()) return
 
+        ensureEncoder()
         val stereoPcm = downmixToStereo(pcmData, inputChannels)
         val encoder = encoderCodec
         if (encoder != null) {
