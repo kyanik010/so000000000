@@ -104,6 +104,16 @@ class AudioSessionManager {
                     onStateChange(AudioExtractionState.FAILED_DECODING, msg, errCode, null)
                     stopCurrentSession()
                 }
+            },
+            onEncodedAacFrame = { frame ->
+                if (frame.mimeType == "audio/mp4a-latm" &&
+                    AudioDecoderEngine.isValidAdtsFrame(frame.data)
+                ) {
+                    outputEngine.enqueueRawAdtsFrame(frame.data)
+                    true
+                } else {
+                    false
+                }
             }
         )
 
