@@ -15,10 +15,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Output engine that takes genuine decoded PCM audio from AudioDecoderEngine,
- * encodes it into independent AAC ADTS frames using native Android MediaCodec
- * (strictly eliminating any video tracks/packets), and serves it via an internal
- * loopback HTTP stream for Media3 ExoPlayer.
+ * Output engine that forwards already-encoded AAC/ADTS frames directly when possible,
+ * and lazily encodes decoded PCM to AAC only for formats that require transcoding.
+ * The resulting audio-only stream is served to Media3 over an internal loopback HTTP endpoint.
  *
  * Synthetic audio generation is completely removed from the production pipeline.
  */
