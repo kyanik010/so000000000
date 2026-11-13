@@ -18,7 +18,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AudioDecoderEngine(
     private val onPcmDecoded: (pcmBytes: ByteArray, sampleRate: Int, channels: Int, ptsUs: Long) -> Unit,
     private val onFormatDiscovered: ((sampleRate: Int, channels: Int, mimeType: String) -> Unit)? = null,
-    private val onError: (errorCode: AudioErrorCode, message: String) -> Unit
+    private val onError: (errorCode: AudioErrorCode, message: String) -> Unit,
+    private val onEncodedAacFrame: ((ExtractedAudioFrame) -> Boolean)? = null
 ) {
 
     private val isRunning = AtomicBoolean(false)
@@ -61,6 +62,28 @@ class AudioDecoderEngine(
         val demuxer = TsAudioDemuxer(
             onFrameExtracted = { frame ->
                 if (!isRunning.get()) return@TsAudioDemuxer
+
+                detectedMimeType = frame.mimeType
+                detectedSampleRate = frame.sampleRate
+                detectedChannels = frame.channelCount
+
+                // Valid AAC/ADTS frames can be forwarded without decoding to PCM and
+                // re-encoding them. This removes two codec stages from the AAC fallback path.
+                val canPassThroughAac =
+                    frame.mimeType == "audio/mp4a-latm" &&
+                    isValidAdtsFrame(frame.data) &&
+                    onEncodedAacFrame?.invoke(frame) == true
+
+                if (canPassThroughAac) {
+                    try {
+                        currentCodec?.stop()
+                        currentCodec?.release()
+                    } catch (_: Exception) {}
+                    currentCodec = null
+                    activeMimeType = frame.mimeType
+                    onFormatDiscovered?.invoke(frame.sampleRate, frame.channelCount, frame.mimeType)
+                    return@TsAudioDemuxer
+                }
 
                 // Ensure decoder is initialized for this frame's mimeType, sample rate, and channels
                 if (currentCodec == null || activeMimeType != frame.mimeType) {
@@ -277,6 +300,18 @@ class AudioDecoderEngine(
     companion object {
         private const val TAG = "SONIXAudioDecoder"
         private const val TIMEOUT_US = 10_000L
+
+        fun isValidAdtsFrame(data: ByteArray): Boolean {
+            if (data.size < 7) return false
+            val b0 = data[0].toInt() and 0xFF
+            val b1 = data[1].toInt() and 0xFF
+            if (b0 != 0xFF || (b1 and 0xF6) != 0xF0) return false
+
+            val frameLength = ((data[3].toInt() and 0x03) shl 11) or
+                ((data[4].toInt() and 0xFF) shl 3) or
+                ((data[5].toInt() and 0xE0) shr 5)
+            return frameLength >= 7 && frameLength <= data.size
+        }
 
         fun getFreqIndex(sampleRate: Int): Int = when (sampleRate) {
             96000 -> 0; 88200 -> 1; 64000 -> 2; 48000 -> 3; 44100 -> 4
