@@ -1450,8 +1450,21 @@ class MainActivity : ComponentActivity() {
     private fun startExternalAudioAttempt(generation: Long) {
         if (generation != externalAudioGeneration || !externalAudioActive) return
         releaseSecondaryAudio()
+        // Bound the secondary audio player's media buffer according to the
+        // device tier. The former 30-second maximum was unnecessarily generous
+        // for an audio-only live stream, especially on low-RAM Android TV boxes.
+        val audioBufferDurations = when (performanceEngine.getActiveTier()) {
+            PerformanceTier.PERFORMANCE -> intArrayOf(1500, 6000, 500, 1500)
+            PerformanceTier.BALANCED -> intArrayOf(2500, 10000, 750, 2000)
+            PerformanceTier.PREMIUM -> intArrayOf(4000, 15000, 1000, 3000)
+        }
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(5000, 30000, 1500, 5000)
+            .setBufferDurationsMs(
+                audioBufferDurations[0],
+                audioBufferDurations[1],
+                audioBufferDurations[2],
+                audioBufferDurations[3]
+            )
             .build()
         // Use the same IPTV HTTP identity and redirect handling as the primary
         // video player. Some providers reject ExoPlayer's default User-Agent.
