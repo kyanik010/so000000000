@@ -34,7 +34,7 @@ class AudioOnlyOutputEngine(
     companion object {
         private const val TAG = "SONIXAudioOutput"
         private const val TIMEOUT_US = 5000L
-        private const val RECENT_BUFFER_MAX_FRAMES = 60 // ~1.3 seconds burst for instant playback
+        private const val RECENT_BUFFER_MAX_FRAMES = 32 // ~0.7 seconds burst; keep only a short live-edge window
         const val OUTPUT_CHANNELS = 2 // Always stereo for universal Android hardware encoder compatibility
 
         /**
@@ -325,7 +325,7 @@ class AudioOnlyOutputEngine(
 
         // 2. Deliver to all active client queues
         clientQueues.forEach { (_, queue) ->
-            while (queue.size > 150) {
+            while (queue.size > 96) {
                 queue.poll() // Discard stale frames to prevent buffer bloat
             }
             queue.offer(frame)
