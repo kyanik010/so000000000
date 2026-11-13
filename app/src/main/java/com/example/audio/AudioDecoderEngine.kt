@@ -9,9 +9,9 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Native Audio decoding engine that demuxes IPTV MPEG-TS or raw audio streams,
- * completely discards all video data, and decodes compressed audio (AAC, MP3, AC-3)
- * to genuine 16-bit PCM sample buffers using hardware/native Android MediaCodec.
+ * Native audio processing engine that demuxes IPTV MPEG-TS or raw audio streams,
+ * completely discards video data, passes valid AAC/ADTS frames through without codec work,
+ * and decodes other supported compressed audio formats to 16-bit PCM when required.
  *
  * Synthetic PCM generation is strictly prohibited in the production decoding pipeline.
  */
@@ -80,6 +80,7 @@ class AudioDecoderEngine(
                         currentCodec?.release()
                     } catch (_: Exception) {}
                     currentCodec = null
+                    isHardwareCodec = false // No decoder is allocated for compressed AAC pass-through.
                     activeMimeType = frame.mimeType
                     onFormatDiscovered?.invoke(frame.sampleRate, frame.channelCount, frame.mimeType)
                     return@TsAudioDemuxer
@@ -164,6 +165,7 @@ class AudioDecoderEngine(
                                 currentCodec?.release()
                             } catch (_: Exception) {}
                             currentCodec = null
+                            isHardwareCodec = false // No decoder is allocated for compressed AAC pass-through.
                             activeMimeType = frame.mimeType
                             onFormatDiscovered?.invoke(frame.sampleRate, frame.channelCount, frame.mimeType)
                             continue
