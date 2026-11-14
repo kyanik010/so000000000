@@ -2514,6 +2514,7 @@
     function connectSavedPlaylist() {
       if (!selectedSavedPlaylistId) return;
       try {
+        closeAllModals();
         parseNative(window.XtreamBridge.activatePlaylist(selectedSavedPlaylistId));
         const result = parseNative(window.XtreamBridge.restoreSession());
         const active = parseNative(window.XtreamBridge.savedCredentials());
