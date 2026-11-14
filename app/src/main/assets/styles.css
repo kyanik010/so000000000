@@ -2024,6 +2024,14 @@
     .settings-credentials-row { display:flex; gap:8px; }
     .settings-credentials-row > input { min-width:0; width:50%; }
     #modal-settings .modal-window { width:clamp(340px, 62vw, 720px); max-height:88vh; }
+    #settings-open-playlists { width:100%; min-height:42px; font-weight:800; }
+    #modal-saved-playlists .saved-playlists-window { width:clamp(320px, 48vw, 560px); max-height:78vh; }
+    #modal-saved-playlists .saved-playlists-modal-body { min-height:150px; }
+    #modal-saved-playlists .saved-playlists-list { max-height:52vh; }
+    #modal-saved-playlists .saved-playlist-item { min-height:48px; font-size:.9rem; }
+    #modal-saved-playlists .saved-playlist-actions { gap:9px; }
+    #modal-saved-playlists .saved-playlist-actions button { min-height:42px; font-size:.82rem; }
+    @media(max-width:600px){#modal-saved-playlists .saved-playlists-window{width:96vw;max-height:88vh}#modal-saved-playlists .saved-playlists-modal-body{padding:14px}}
     #modal-settings .modal-body { overscroll-behavior:contain; }
     @media (max-width:600px) {
       #modal-settings .modal-window { width:96vw; max-height:90vh; }
