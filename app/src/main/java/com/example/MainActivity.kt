@@ -506,6 +506,13 @@ class MainActivity : ComponentActivity() {
                 wv.post { wv.evaluateJavascript("window.onSonixControlSync && window.onSonixControlSync(JSON.parse($payload))", null) }
             }
 
+            sonixControlClient.onUpdateCheck = { result ->
+                val update = result.optJSONObject("update")
+                if (result.optBoolean("update_available") && update != null) {
+                    runOnUiThread { showAppUpdateDialog(update) }
+                }
+            }
+
             sonixControlClient.onAudioSourcesSync = { result ->
                 val payload = JSONObject.quote(result.toString())
                 wv.post { wv.evaluateJavascript("window.onAudioM3uSynced && window.onAudioM3uSynced(JSON.parse($payload))", null) }
@@ -2398,6 +2405,67 @@ class MainActivity : ComponentActivity() {
         val wv = webView ?: return
         val js = "if(window.handleRemoteKey){window.handleRemoteKey('$keyName');}else{var ev=new KeyboardEvent('keydown',{key:'$keyName',code:'$keyName',bubbles:true,cancelable:true});window.dispatchEvent(ev);}"
         wv.evaluateJavascript(js, null)
+    }
+
+    private var lastPromptedUpdateVersionCode = -1L
+
+    private fun showAppUpdateDialog(update: JSONObject) {
+        if (isFinishing || isDestroyed) return
+        val targetVersionCode = update.optLong("version_code", -1L)
+        if (targetVersionCode <= 0L || targetVersionCode == lastPromptedUpdateVersionCode) return
+        val currentInfo = packageManager.getPackageInfo(packageName, 0)
+        val currentCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            currentInfo.longVersionCode
+        } else currentInfo.versionCode.toLong()
+        if (targetVersionCode <= currentCode) return
+        lastPromptedUpdateVersionCode = targetVersionCode
+
+        val mandatory = update.optString("update_policy") == "mandatory"
+        val notes = update.optString("release_notes").trim().ifBlank { "يتوفر إصدار جديد من SONIX." }
+        val message = "الإصدار الحالي: " + currentInfo.versionName + "\\n" +
+            "الإصدار الجديد: " + update.optString("version_name") + "\\n\\n" + notes +
+            "\\n\\nسيتم التحقق من سلامة الملف وتوقيعه قبل فتح مثبت Android."
+        val builder = android.app.AlertDialog.Builder(this)
+            .setTitle(if (mandatory) "تحديث إلزامي لـ SONIX" else "يتوفر تحديث جديد")
+            .setMessage(message)
+            .setPositiveButton("تنزيل التحديث") { _, _ ->
+                val progress = android.app.ProgressDialog(this).apply {
+                    setTitle("تحديث SONIX")
+                    setMessage("جارٍ تنزيل ملف التحديث...")
+                    setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
+                    max = 100
+                    setProgress(0)
+                    setCancelable(false)
+                    show()
+                }
+                AppUpdateInstaller.download(
+                    this, update,
+                    onProgress = { value ->
+                        if (value >= 0) {
+                            progress.isIndeterminate = false
+                            progress.progress = value
+                        } else progress.isIndeterminate = true
+                    },
+                    onReady = { apk ->
+                        if (progress.isShowing) progress.dismiss()
+                        android.widget.Toast.makeText(this, "تم تنزيل التحديث والتحقق من سلامته", android.widget.Toast.LENGTH_LONG).show()
+                        val launched = AppUpdateInstaller.install(this, apk)
+                        if (!launched && !(android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls())) {
+                            android.widget.Toast.makeText(this, "تعذر فتح مثبت Android", android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    onError = { error ->
+                        if (progress.isShowing) progress.dismiss()
+                        android.app.AlertDialog.Builder(this)
+                            .setTitle("تعذر تنزيل التحديث")
+                            .setMessage(error)
+                            .setPositiveButton("حسناً", null)
+                            .show()
+                    }
+                )
+            }
+        if (!mandatory) builder.setNegativeButton("لاحقاً", null)
+        builder.setCancelable(!mandatory).show()
     }
 
     override fun onResume() {
