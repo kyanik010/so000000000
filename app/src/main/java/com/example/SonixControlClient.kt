@@ -39,12 +39,18 @@ class SonixControlClient(context: Context) {
                     .put("model", Build.MODEL ?: "")
                     .put("os_version", Build.VERSION.RELEASE ?: "")
                     .put("app_version", app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: ""))
+                val shortCode = result.optString("device_code", "").trim()
+                if (shortCode.matches(Regex("[A-Z0-9]{10}"))) {
+                    prefs.edit().putString("device_code", shortCode).apply()
+                }
                 onSync?.invoke(result)
             } catch (e: Exception) {
                 android.util.Log.w("SONIXControl", "Control sync failed", e)
             }
         }
     }
+
+    fun deviceCode(): String = prefs.getString("device_code", "") ?: ""
 
     fun loadCachedAudioSources() {
         executor.execute {
