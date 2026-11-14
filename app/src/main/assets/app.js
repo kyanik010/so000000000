@@ -3009,9 +3009,9 @@
 
     function normalizeAudioSourceText(value) {
       return String(value || '').toLowerCase()
-        .replace(/[\\u064B-\\u065F\\u0670]/g, '')
+        .replace(/[\u064B-\u065F\u0670]/g, '')
         .replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')
-        .replace(/[^a-z0-9\\u0600-\\u06FF]+/g, ' ').trim();
+        .replace(/[^a-z0-9\u0600-\u06FF]+/g, ' ').trim();
     }
     function classifyAudioSource(name, categoryName, categoryId) {
       // Provider category IDs are opaque; never use them as brand evidence.
