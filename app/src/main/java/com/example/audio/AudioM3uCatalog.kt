@@ -2,6 +2,10 @@ package com.example.audio
 
 import android.content.Context
 import android.system.Os
+import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -13,6 +17,11 @@ import java.util.zip.GZIPInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 /**
  * Downloads only the M3U text playlist (never channel media segments), extracts
@@ -28,7 +37,7 @@ class AudioM3uCatalog(context: Context) {
                 return JSONObject().put("success", false).put("cached", false)
                     .put("error", "لا توجد مصادر صوت محفوظة بعد")
             }
-            val cached = JSONObject(cacheFile.readText(Charsets.UTF_8))
+            val cached = readCachePayload()
             val channels = cached.optJSONArray("channels") ?: JSONArray()
             if (channels.length() == 0) {
                 JSONObject().put("success", false).put("cached", false)
@@ -167,13 +176,41 @@ class AudioM3uCatalog(context: Context) {
         return match?.groupValues?.getOrNull(1)?.trim().orEmpty()
     }
 
+    /** Read encrypted cache; transparently migrate the previous plaintext JSON once. */
+    private fun readCachePayload(): JSONObject {
+        val raw = JSONObject(cacheFile.readText(Charsets.UTF_8))
+        if (raw.optInt("_sonix_encrypted_version") == 1) {
+            val iv = Base64.decode(raw.getString("iv"), Base64.NO_WRAP)
+            val encrypted = Base64.decode(raw.getString("ciphertext"), Base64.NO_WRAP)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateCacheKey(), GCMParameterSpec(128, iv))
+            return JSONObject(String(cipher.doFinal(encrypted), Charsets.UTF_8))
+        }
+
+        // Legacy cache remains readable, but is immediately rewritten using Keystore AES-GCM.
+        try {
+            persist(raw)
+        } catch (_: Exception) {
+            // Keep the current session functional if migration is temporarily unavailable.
+        }
+        return raw
+    }
+
     private fun persist(payload: JSONObject) {
         val parent = cacheFile.parentFile ?: throw IllegalStateException("تعذر تحديد مجلد ذاكرة الصوت")
         if (!parent.exists() && !parent.mkdirs()) throw IllegalStateException("تعذر إنشاء مجلد ذاكرة الصوت")
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateCacheKey())
+        val envelope = JSONObject()
+            .put("_sonix_encrypted_version", 1)
+            .put("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .put("ciphertext", Base64.encodeToString(cipher.doFinal(payload.toString().toByteArray(Charsets.UTF_8)), Base64.NO_WRAP))
+
         val temp = File(parent, cacheFile.name + ".tmp")
         try {
             FileOutputStream(temp).use { output ->
-                output.write(payload.toString().toByteArray(Charsets.UTF_8))
+                output.write(envelope.toString().toByteArray(Charsets.UTF_8))
                 output.fd.sync()
             }
             Os.rename(temp.absolutePath, cacheFile.absolutePath)
@@ -181,6 +218,27 @@ class AudioM3uCatalog(context: Context) {
             temp.delete()
             throw error
         }
+    }
+
+    private fun getOrCreateCacheKey(): SecretKey {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (keyStore.getKey(CACHE_KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        generator.init(
+            KeyGenParameterSpec.Builder(
+                CACHE_KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setRandomizedEncryptionRequired(true)
+                .build()
+        )
+        return generator.generateKey()
+    }
+
+    private companion object {
+        const val CACHE_KEY_ALIAS = "sonix_audio_catalog_v1"
     }
 
     private fun sha256(value: String): String =
