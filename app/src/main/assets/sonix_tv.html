@@ -48,6 +48,15 @@
   </section>
 
   <section id="sonix-login-screen" class="hidden" aria-label="تسجيل الدخول">
+    <aside class="login-playlists-panel" aria-label="قوائم التشغيل">
+      <h2>قوائم التشغيل</h2>
+      <div id="saved-playlists-list" class="saved-playlists-list" aria-live="polite"></div>
+      <div id="saved-playlist-actions" class="saved-playlist-actions hidden">
+        <button type="button" id="playlist-connect" class="focusable playlist-action-connect">يتصل</button>
+        <button type="button" id="playlist-edit" class="focusable">تعديل</button>
+        <button type="button" id="playlist-delete" class="focusable playlist-action-delete">حذف</button>
+      </div>
+    </aside>
     <div class="sonix-login-card">
       <div class="sonix-brand sonix-brand-login" style="align-items:center"><img class="sonix-brand-image" src="sonix-logo-horizontal.png" alt="SONIX TV"></div>
       <select id="login-server" class="focusable" aria-label="اختار السيرفر" disabled><option value="" selected>اختار السيرفر</option></select>
@@ -57,6 +66,10 @@
       <button id="login-submit" class="focusable" type="button" disabled>تسجيل الدخول</button>
       <div id="sonix-login-message" role="status"></div>
     </div>
+    <aside class="login-device-panel" aria-label="معرّف الجهاز">
+      <span class="login-device-label">ID</span>
+      <strong id="login-device-code" dir="ltr">جارٍ التحميل...</strong>
+    </aside>
   </section>
   <!-- Ambient Wave Layer -->
   <div class="ambient-waves"></div>
