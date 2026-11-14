@@ -3018,6 +3018,7 @@
       const channel = normalizeAudioSourceText(name);
       const category = normalizeAudioSourceText(categoryName);
       const text = channel + ' ' + category;
+      if (/(^| )(movie|movies|film|films|series|episode|episodes|vod|فيلم|افلام|مسلسل|مسلسلات|حلقة|حلقات)( |$)/.test(category)) return '';
       if (/(^| )(bein sports|bein sport|beinsports|beinsport|be in sports|be in sport)( |$)/.test(text) ||
           /(^| )(بي ان سبورت|بين سبورت|بين سبورتس|بيان سبورت)( |$)/.test(text)) return 'BEIN SPORTS';
       if (/(^| )(alwan|al wan|elwan|الوان)( |$)/.test(text)) return 'ALWAN';
