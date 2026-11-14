@@ -57,7 +57,6 @@ class XtreamBridge(context: Context) {
         catalogConnections.values.forEach { it.disconnect() }
         catalogJobs.values.forEach { it.cancel(true) }
         catalogExecutor.shutdownNow()
-        try { com.example.audio.AudioAddonManager.getInstance(appContext, this).shutdown() } catch (_: Exception) {}
     }
 
     @JavascriptInterface
