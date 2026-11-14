@@ -565,6 +565,9 @@ class MainActivity : ComponentActivity() {
 
     private inner class SonixControlBridge {
         @android.webkit.JavascriptInterface
+        fun deviceCode(): String = if (::sonixControlClient.isInitialized) sonixControlClient.deviceCode() else ""
+
+        @android.webkit.JavascriptInterface
         fun syncAudioSources() {
             if (::sonixControlClient.isInitialized) sonixControlClient.syncAudioSources()
         }
