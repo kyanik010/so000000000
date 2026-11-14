@@ -200,6 +200,15 @@ class SecurityAndSubtitleAuditTest {
         assertThrows(SecurityException::class.java) {
             NetworkSecurityValidator.assertSafeUrl("http://metadata.google.internal/computeMetadata/v1")
         }
+        assertThrows(SecurityException::class.java) {
+            NetworkSecurityValidator.assertSafeUrl("http://100.100.100.200/latest/meta-data")
+        }
+        assertThrows(SecurityException::class.java) {
+            NetworkSecurityValidator.assertSafeUrl("http://168.63.129.16/metadata/instance")
+        }
+        assertThrows(SecurityException::class.java) {
+            NetworkSecurityValidator.assertSafeUrl("http://[fd00:ec2::254]/latest/meta-data")
+        }
     }
 
     @Test
