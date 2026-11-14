@@ -1,6 +1,7 @@
 package com.example
 
 import android.annotation.SuppressLint
+import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -386,6 +387,8 @@ class MainActivity : ComponentActivity() {
     private var secondaryAudioPlayer: ExoPlayer? = null
     private val externalAudioHandler = Handler(Looper.getMainLooper())
     private var externalAudioRetryRunnable: Runnable? = null
+    private var externalAudioBufferingRunnable: Runnable? = null
+    private var externalAudioLoudnessEnhancer: LoudnessEnhancer? = null
     private var externalAudioRetryAttempt = 0
     private var externalAudioGeneration = 0L
     private var externalAudioSourceUrl = ""
@@ -1019,7 +1022,9 @@ class MainActivity : ComponentActivity() {
         fun setMuted(muted: Boolean) {
             runOnUiThread {
                 nativeVideoMuted = muted
-                nativePlayer?.volume = if (muted) 0f else 1f
+                val externalIsAudible = externalAudioActive && secondaryAudioPlayer?.isPlaying == true
+                nativePlayer?.volume = if (muted || externalIsAudible) 0f else 1f
+                secondaryAudioPlayer?.volume = if (muted) 0f else externalAudioVolume
             }
         }
 
@@ -1356,7 +1361,7 @@ class MainActivity : ComponentActivity() {
         fun setExternalAudioVolume(volume: Float) {
             runOnUiThread {
                 externalAudioVolume = volume.coerceIn(0f, 1f)
-                secondaryAudioPlayer?.volume = externalAudioVolume
+                secondaryAudioPlayer?.volume = if (nativeVideoMuted) 0f else externalAudioVolume
             }
         }
 
@@ -1488,19 +1493,28 @@ class MainActivity : ComponentActivity() {
                 )
                 trackSelectionParameters = trackSelectionParameters.buildUpon()
                     .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true).build()
-                volume = externalAudioVolume
+                volume = if (nativeVideoMuted) 0f else externalAudioVolume
             }
         secondaryAudioPlayer = audioPlayer
         audioPlayer.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 if (generation != externalAudioGeneration || secondaryAudioPlayer !== audioPlayer) return
                 when (state) {
-                    Player.STATE_BUFFERING -> webView?.evaluateJavascript(
-                        "window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
+                    Player.STATE_BUFFERING -> {
+                        scheduleExternalAudioBufferingTimeout(generation)
+                        // Keep the main programme audible while B is not producing audio.
+                        nativePlayer?.volume = if (nativeVideoMuted) 0f else 1f
+                        webView?.evaluateJavascript(
+                            "window.onExternalAudioBuffering && window.onExternalAudioBuffering()", null)
+                    }
                     Player.STATE_READY -> {
+                        cancelExternalAudioBufferingTimeout()
                         externalAudioRetryRunnable?.let(externalAudioHandler::removeCallbacks)
                         externalAudioRetryRunnable = null
                         externalAudioRetryAttempt = 0
+                        nativePlayer?.volume = 0f
+                        secondaryAudioPlayer?.volume = if (nativeVideoMuted) 0f else externalAudioVolume
+                        applyExternalAudioLoudnessEnhancer(audioPlayer)
                         applyExternalAudioSyncOffset()
 
                         webView?.evaluateJavascript(
@@ -1544,8 +1558,47 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun applyExternalAudioLoudnessEnhancer(player: ExoPlayer) {
+        try {
+            externalAudioLoudnessEnhancer?.release()
+            externalAudioLoudnessEnhancer = null
+            if (player.audioSessionId == C.AUDIO_SESSION_ID_UNSET) return
+            externalAudioLoudnessEnhancer = LoudnessEnhancer(player.audioSessionId).apply {
+                setTargetGain(600) // +6 dB headroom compensation for quieter external feeds.
+                enabled = true
+            }
+        } catch (error: Exception) {
+            android.util.Log.w("SONIXExternalAudio", "Loudness enhancement unavailable; using source level", error)
+            externalAudioLoudnessEnhancer?.release()
+            externalAudioLoudnessEnhancer = null
+        }
+    }
+
+    private fun cancelExternalAudioBufferingTimeout() {
+        externalAudioBufferingRunnable?.let(externalAudioHandler::removeCallbacks)
+        externalAudioBufferingRunnable = null
+    }
+
+    private fun scheduleExternalAudioBufferingTimeout(generation: Long) {
+        cancelExternalAudioBufferingTimeout()
+        val timeout = Runnable {
+            externalAudioBufferingRunnable = null
+            val player = secondaryAudioPlayer
+            if (generation == externalAudioGeneration && externalAudioActive &&
+                player != null && player.playbackState == Player.STATE_BUFFERING
+            ) {
+                android.util.Log.w("SONIXExternalAudio", "External audio buffering watchdog expired")
+                scheduleExternalAudioRetry(generation)
+            }
+        }
+        externalAudioBufferingRunnable = timeout
+        externalAudioHandler.postDelayed(timeout, 25000L)
+    }
+
     private fun scheduleExternalAudioRetry(generation: Long) {
         if (generation != externalAudioGeneration || !externalAudioActive) return
+        cancelExternalAudioBufferingTimeout()
+        nativePlayer?.volume = if (nativeVideoMuted) 0f else 1f
         releaseSecondaryAudio()
         externalAudioRetryAttempt = (externalAudioRetryAttempt + 1).coerceAtMost(7)
         if (!externalAudioUsingExtractorFallback &&
@@ -1641,14 +1694,15 @@ class MainActivity : ComponentActivity() {
     private fun detachExternalAudioInternal(notifyWeb: Boolean) {
         externalAudioRetryRunnable?.let(externalAudioHandler::removeCallbacks)
         externalAudioRetryRunnable = null
+        cancelExternalAudioBufferingTimeout()
         externalAudioGeneration++
         externalAudioRetryAttempt = 0
         externalAudioSourceUrl = ""
         externalAudioStreamId = ""
         externalAudioExtension = "ts"
         externalAudioUsingExtractorFallback = false
-        val wasActive = externalAudioActive
         externalAudioActive = false
+        nativePlayer?.volume = if (nativeVideoMuted) 0f else 1f
         releaseSecondaryAudio()
         try {
             com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).stopIndependentAudio()
@@ -1660,6 +1714,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun releaseSecondaryAudio() {
+        externalAudioLoudnessEnhancer?.let { enhancer ->
+            try { enhancer.enabled = false; enhancer.release() } catch (_: Exception) {}
+        }
+        externalAudioLoudnessEnhancer = null
         secondaryAudioPlayer?.let { player ->
             player.stop()
             player.clearMediaItems()
