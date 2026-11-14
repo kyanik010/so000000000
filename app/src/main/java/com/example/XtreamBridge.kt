@@ -72,6 +72,7 @@ class XtreamBridge(context: Context) {
             val userInfo = XtreamAccountValidator.validate(root, System.currentTimeMillis())
 
             vault.save(normalizedServer, username, password)
+            vault.savePlaylist(normalizedServer.substringAfter("://").substringBefore("/"), normalizedServer, username, password)
             try { com.example.audio.AudioAddonManager.getInstance(appContext, this).onSessionActivated() } catch (_: Exception) {}
             try { CatalogRefreshScheduler.ensureScheduled(appContext) }
             catch (scheduleError: Exception) { android.util.Log.w("SONIX", "Could not schedule background catalog refresh", scheduleError) }
@@ -463,6 +464,43 @@ class XtreamBridge(context: Context) {
     }
 
     @JavascriptInterface
+    fun savedPlaylists(): String = vault.playlistsJson()
+
+    @JavascriptInterface
+    fun saveCurrentPlaylist(label: String): String {
+        return try {
+            val current = vault.read() ?: throw IllegalStateException("لا توجد قائمة نشطة لحفظها")
+            vault.savePlaylist(label, current.server, current.username, current.password)
+            vault.playlistsJson()
+        } catch (error: Throwable) { errorResult(error) }
+    }
+
+    @JavascriptInterface
+    fun activatePlaylist(id: String): String {
+        return try {
+            val credentials = vault.findPlaylist(id) ?: throw IllegalArgumentException("القائمة غير موجودة")
+            vault.save(credentials.server, credentials.username, credentials.password)
+            JSONObject().put("success", true).toString()
+        } catch (error: Throwable) { errorResult(error) }
+    }
+
+    @JavascriptInterface
+    fun deletePlaylist(id: String): String {
+        return try {
+            vault.deletePlaylist(id)
+            vault.playlistsJson()
+        } catch (error: Throwable) { errorResult(error) }
+    }
+
+    @JavascriptInterface
+    fun renamePlaylist(id: String, label: String): String {
+        return try {
+            vault.renamePlaylist(id, label)
+            vault.playlistsJson()
+        } catch (error: Throwable) { errorResult(error) }
+    }
+
+    @JavascriptInterface
     fun savedCredentials(): String {
         return try {
             val credentials = vault.read() ?: return JSONObject().put("success", false).toString()
@@ -707,6 +745,119 @@ internal class CredentialVault(private val context: Context) {
         }
 
         return null
+    }
+
+    @Synchronized
+    fun savePlaylist(label: String, server: String, username: String, password: String) {
+        val rows = readPlaylistRows()
+        val id = playlistId(server, username)
+        val cleanLabel = label.trim().ifBlank { server.substringAfter("://").substringBefore("/") }.take(48)
+        val row = JSONObject().put("id", id).put("label", cleanLabel)
+            .put("server", server).put("username", username).put("password", password)
+        val index = (0 until rows.length()).firstOrNull { rows.optJSONObject(it)?.optString("id") == id }
+        if (index == null) rows.put(row) else rows.put(index, row)
+        writePlaylistRows(rows)
+    }
+
+    @Synchronized
+    fun playlistsJson(): String {
+        val safe = JSONArray()
+        val rows = readPlaylistRows()
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            safe.put(JSONObject().put("id", row.optString("id"))
+                .put("label", row.optString("label"))
+                .put("server", row.optString("server"))
+                .put("username", row.optString("username")))
+        }
+        return JSONObject().put("success", true).put("playlists", safe).toString()
+    }
+
+    @Synchronized
+    fun findPlaylist(id: String): StoredCredentials? {
+        val rows = readPlaylistRows()
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            if (row.optString("id") == id) return StoredCredentials(
+                row.getString("server"), row.getString("username"), row.getString("password"))
+        }
+        return null
+    }
+
+    @Synchronized
+    fun deletePlaylist(id: String) {
+        val rows = readPlaylistRows()
+        val kept = JSONArray()
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            if (row.optString("id") != id) kept.put(row)
+        }
+        writePlaylistRows(kept)
+    }
+
+    @Synchronized
+    fun renamePlaylist(id: String, label: String) {
+        val clean = label.trim()
+        require(clean.isNotBlank()) { "أدخل اسم القائمة" }
+        require(clean.length <= 48) { "اسم القائمة طويل جداً" }
+        val rows = readPlaylistRows()
+        var found = false
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            if (row.optString("id") == id) { row.put("label", clean); found = true }
+        }
+        require(found) { "القائمة غير موجودة" }
+        writePlaylistRows(rows)
+    }
+
+    private fun playlistId(server: String, username: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest((server.trim().lowercase() + "\n" + username.trim().lowercase()).toByteArray(Charsets.UTF_8))
+            .take(12).joinToString("") { "%02x".format(it) }
+
+    private fun readPlaylistRows(): JSONArray {
+        val prefs = context.getSharedPreferences("sonix_saved_playlists", Context.MODE_PRIVATE)
+        val encrypted = prefs.getString("ciphertext", null)
+        val iv = prefs.getString("iv", null)
+        if (!encrypted.isNullOrBlank() && !iv.isNullOrBlank()) {
+            try {
+                val cipher = Cipher.getInstance(TRANSFORMATION)
+                cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
+                return JSONArray(String(cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)), Charsets.UTF_8))
+            } catch (error: Throwable) {
+                android.util.Log.w("SONIX", "Unable to decrypt saved playlists with Keystore", error)
+            }
+        }
+        val fallback = prefs.getString("fallback_ciphertext", null)
+        if (!fallback.isNullOrBlank()) {
+            try {
+                val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+                cipher.init(Cipher.DECRYPT_MODE, getFallbackKey())
+                return JSONArray(String(cipher.doFinal(Base64.decode(fallback, Base64.NO_WRAP)), Charsets.UTF_8))
+            } catch (error: Throwable) {
+                android.util.Log.w("SONIX", "Unable to decrypt saved playlists fallback", error)
+            }
+        }
+        return JSONArray()
+    }
+
+    private fun writePlaylistRows(rows: JSONArray) {
+        val prefs = context.getSharedPreferences("sonix_saved_playlists", Context.MODE_PRIVATE)
+        val plain = rows.toString().toByteArray(Charsets.UTF_8)
+        try {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            val encrypted = cipher.doFinal(plain)
+            prefs.edit().putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                .remove("fallback_ciphertext").apply()
+        } catch (error: Throwable) {
+            android.util.Log.w("SONIX", "Keystore playlist encryption unavailable; using device fallback", error)
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+            cipher.init(Cipher.ENCRYPT_MODE, getFallbackKey())
+            prefs.edit().putString("fallback_ciphertext", Base64.encodeToString(cipher.doFinal(plain), Base64.NO_WRAP))
+                .remove("ciphertext").remove("iv").apply()
+        }
     }
 
     fun clear() {
