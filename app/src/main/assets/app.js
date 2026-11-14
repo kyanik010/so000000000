@@ -2508,7 +2508,8 @@
       try {
         parseNative(window.XtreamBridge.activatePlaylist(selectedSavedPlaylistId));
         const result = parseNative(window.XtreamBridge.restoreSession());
-        activeCredentials = {server:result.server_info && result.server_info.url || '', username:(result.user_info && result.user_info.username) || ''};
+        const active = parseNative(window.XtreamBridge.savedCredentials());
+        activeCredentials = {server:active.server || '', username:active.username || ''};
         updateAccount(result.user_info || {});
         const loginScreen = document.getElementById('sonix-login-screen');
         if (loginScreen.contains(document.activeElement)) document.activeElement.blur();
@@ -2529,6 +2530,7 @@
         if (!item) return;
         const server = document.getElementById('login-server');
         server.value = item.server || '';
+        server.dispatchEvent(new Event('change', {bubbles:true}));
         document.getElementById('login-username').value = item.username || '';
         document.getElementById('login-password').value = '';
         setLoginMessage('أدخل كلمة المرور الجديدة ثم اضغط تسجيل الدخول لحفظ التعديل');
@@ -2555,7 +2557,8 @@
         const result=parseNative(window.XtreamBridge.login(server,username,password));
         const serverSelect=document.getElementById('login-server');
         const playlistLabel=serverSelect && serverSelect.selectedOptions && serverSelect.selectedOptions[0] ? serverSelect.selectedOptions[0].textContent : '';
-        parseNative(window.XtreamBridge.saveCurrentPlaylist(playlistLabel || server));
+        try { parseNative(window.XtreamBridge.saveCurrentPlaylist(playlistLabel || server)); }
+        catch (saveError) { console.warn('Playlist label update failed', saveError); }
         refreshSavedPlaylists();
         activeCredentials={server:server.trim().replace(/\/+$/,''),username:result.user_info.username || username};
         updateAccount(result.user_info);
