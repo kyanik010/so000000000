@@ -2471,36 +2471,42 @@
       } catch (_) { target.textContent = 'سيظهر بعد الاتصال'; }
     }
     function refreshSavedPlaylists() {
-      const list = document.getElementById('saved-playlists-list');
-      const actions = document.getElementById('saved-playlist-actions');
-      if (!list || !window.XtreamBridge || !window.XtreamBridge.savedPlaylists) return;
+      const listIds = ['saved-playlists-list', 'settings-saved-playlists-list'];
+      const actionIds = ['saved-playlist-actions', 'settings-saved-playlist-actions'];
+      if (!window.XtreamBridge || !window.XtreamBridge.savedPlaylists) return;
       try {
         const result = parseNative(window.XtreamBridge.savedPlaylists());
         const rows = Array.isArray(result.playlists) ? result.playlists : [];
-        list.replaceChildren();
-        if (!rows.length) {
-          const empty = document.createElement('div');
-          empty.className = 'saved-playlists-empty';
-          empty.textContent = 'لا توجد قوائم محفوظة بعد';
-          list.appendChild(empty);
-          selectedSavedPlaylistId = '';
-          if (actions) actions.classList.add('hidden');
-          return;
-        }
-        rows.forEach(item => {
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.className = 'saved-playlist-item focusable' + (item.id === selectedSavedPlaylistId ? ' selected' : '');
-          button.textContent = item.label || item.server || 'قائمة تشغيل';
-          button.addEventListener('click', () => {
-            selectedSavedPlaylistId = item.id;
-            refreshSavedPlaylists();
-            if (remoteNavigator) remoteNavigator.focusElement(document.querySelector('.saved-playlist-item.selected'));
-          });
-          list.appendChild(button);
-        });
         if (!rows.some(item => item.id === selectedSavedPlaylistId)) selectedSavedPlaylistId = '';
-        if (actions) actions.classList.toggle('hidden', !selectedSavedPlaylistId);
+        listIds.forEach(listId => {
+          const list = document.getElementById(listId);
+          if (!list) return;
+          list.replaceChildren();
+          if (!rows.length) {
+            const empty = document.createElement('div');
+            empty.className = 'saved-playlists-empty';
+            empty.textContent = 'لا توجد قوائم محفوظة بعد';
+            list.appendChild(empty);
+            return;
+          }
+          rows.forEach(item => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'saved-playlist-item focusable' + (item.id === selectedSavedPlaylistId ? ' selected' : '');
+            button.textContent = item.label || item.server || 'قائمة تشغيل';
+            button.addEventListener('click', () => {
+              selectedSavedPlaylistId = item.id;
+              refreshSavedPlaylists();
+              const selected = list.querySelector('.saved-playlist-item.selected');
+              if (selected && remoteNavigator) remoteNavigator.focusElement(selected);
+            });
+            list.appendChild(button);
+          });
+        });
+        actionIds.forEach(actionId => {
+          const actions = document.getElementById(actionId);
+          if (actions) actions.classList.toggle('hidden', !selectedSavedPlaylistId);
+        });
       } catch (error) {
         console.warn('Unable to load saved playlists', error);
       }
@@ -2530,6 +2536,9 @@
         const rows = parseNative(window.XtreamBridge.savedPlaylists()).playlists || [];
         const item = rows.find(row => row.id === selectedSavedPlaylistId);
         if (!item) return;
+        closeAllModals();
+        const loginScreen = document.getElementById('sonix-login-screen');
+        loginScreen.classList.remove('hidden');
         const server = document.getElementById('login-server');
         server.value = item.server || '';
         server.dispatchEvent(new Event('change', {bubbles:true}));
@@ -3327,6 +3336,13 @@
       document.getElementById('btn-refresh').addEventListener('click', () => refreshXtreamContent());
       document.getElementById('btn-profile').addEventListener('click', () => openModal('modal-profile'));
       document.getElementById('btn-settings').addEventListener('click', () => openModal('modal-settings'));
+      document.getElementById('settings-open-playlists').addEventListener('click', () => {
+        refreshSavedPlaylists();
+        openModal('modal-saved-playlists');
+      });
+      document.getElementById('settings-playlist-connect').addEventListener('click', connectSavedPlaylist);
+      document.getElementById('settings-playlist-edit').addEventListener('click', editSavedPlaylist);
+      document.getElementById('settings-playlist-delete').addEventListener('click', deleteSavedPlaylist);
       document.getElementById('settings-refresh').addEventListener('click', () => refreshXtreamContent());
       document.getElementById('settings-account').addEventListener('click', () => {
         closeAllModals();
@@ -3375,6 +3391,8 @@
       document.getElementById('close-profile-footer').addEventListener('click', closeAllModals);
       document.getElementById('close-settings').addEventListener('click', closeAllModals);
       document.getElementById('close-settings-footer').addEventListener('click', closeAllModals);
+      document.getElementById('close-saved-playlists').addEventListener('click', closeAllModals);
+      document.getElementById('close-saved-playlists-footer').addEventListener('click', closeAllModals);
       document.getElementById('close-search').addEventListener('click', closeAllModals);
       document.getElementById('close-search-footer').addEventListener('click', closeAllModals);
       document.getElementById('close-power').addEventListener('click', closeAllModals);
