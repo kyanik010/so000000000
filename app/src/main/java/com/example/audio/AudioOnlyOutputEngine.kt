@@ -378,11 +378,17 @@ class AudioOnlyOutputEngine(
             val input = client.getInputStream()
             val output = client.getOutputStream()
 
-            // Read HTTP GET request line
+            // Require the unguessable per-session path token; loopback alone is not authentication.
             val requestLine = input.bufferedReader(Charsets.UTF_8).readLine() ?: return
-            if (!requestLine.startsWith("GET")) return
+            val requestParts = requestLine.split(' ')
+            val expectedPath = "/sonix_audio_stream_$sessionId.aac"
+            if (requestParts.size < 3 || requestParts[0] != "GET" || requestParts[1] != expectedPath) {
+                output.write("HTTP/1.1 404 Not Found\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n".toByteArray(Charsets.UTF_8))
+                output.flush()
+                return
+            }
 
-            AudioLog.d(TAG, "Media3 client connected to local loopback: port=$serverPort")
+            AudioLog.d(TAG, "Authenticated Media3 client connected to local loopback: port=$serverPort")
 
             // Respond with HTTP 200 Audio-Only stream
             val header = "HTTP/1.1 200 OK\r\n" +
