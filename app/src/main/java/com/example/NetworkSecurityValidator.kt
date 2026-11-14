@@ -99,7 +99,7 @@ internal object NetworkSecurityValidator {
             // AWS IMDS IPv6 endpoint fd00:ec2::254.
             val awsMetadataV6 = byteArrayOf(
                 0xFD.toByte(), 0x00, 0x0E, 0xC2.toByte(),
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFE.toByte()
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54
             )
             if (bytes.contentEquals(awsMetadataV6)) return true
         }
