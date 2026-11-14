@@ -446,6 +446,8 @@ class MainActivity : ComponentActivity() {
                     // Assets loaded via file:///android_asset/ work reliably with default settings.
                     allowFileAccess = false
                     allowContentAccess = false
+                    allowFileAccessFromFileURLs = false
+                    allowUniversalAccessFromFileURLs = false
                     loadWithOverviewMode = true
                     useWideViewPort = true
                     builtInZoomControls = false
@@ -458,7 +460,8 @@ class MainActivity : ComponentActivity() {
 
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                        val target = request?.url ?: return true
+                        if (request == null || !request.isForMainFrame) return false
+                        val target = request.url
                         // The application UI is a bundled asset. Never allow remote or
                         // content-provider pages to replace this trusted JavaScript bridge origin.
                         return !(target.scheme == "file" &&
