@@ -17,7 +17,10 @@ internal object NetworkSecurityValidator {
         "metadata.google.internal",
         "instance-data",
         "169.254.169.254",
-        "169.254.170.2"
+        "169.254.170.2",
+        "100.100.100.200",
+        "168.63.129.16",
+        "fd00:ec2::254"
     )
 
     /**
@@ -85,8 +88,20 @@ internal object NetworkSecurityValidator {
             // 0.0.0.0/8 current network
             if (b0 == 0) return true
 
+            // Common cloud metadata endpoints outside the IPv4 link-local range.
+            if ((b0 == 100 && b1 == 100 && (bytes[2].toInt() and 0xFF) == 100 && (bytes[3].toInt() and 0xFF) == 200) ||
+                (b0 == 168 && b1 == 63 && (bytes[2].toInt() and 0xFF) == 129 && (bytes[3].toInt() and 0xFF) == 16)
+            ) return true
+
             // IPv4 multicast and limited broadcast are not valid IPTV destinations.
             if (b0 in 224..239 || (b0 == 255 && b1 == 255)) return true
+        } else if (bytes.size == 16) {
+            // AWS IMDS IPv6 endpoint fd00:ec2::254.
+            val awsMetadataV6 = byteArrayOf(
+                0xFD.toByte(), 0x00, 0x0E, 0xC2.toByte(),
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFE.toByte()
+            )
+            if (bytes.contentEquals(awsMetadataV6)) return true
         }
 
         return false
