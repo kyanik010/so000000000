@@ -435,8 +435,13 @@ class MainActivity : ComponentActivity() {
                 settings.apply {
                     javaScriptEnabled = true
                     domStorageEnabled = true
-                    databaseEnabled = true
+                    databaseEnabled = false
                     mediaPlaybackRequiresUserGesture = false
+                    javaScriptCanOpenWindowsAutomatically = false
+                    setSupportMultipleWindows(false)
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        safeBrowsingEnabled = true
+                    }
                     // Secure defaults: restrict arbitrary local file access from web contents.
                     // Assets loaded via file:///android_asset/ work reliably with default settings.
                     allowFileAccess = false
@@ -453,7 +458,12 @@ class MainActivity : ComponentActivity() {
 
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                        return false
+                        val target = request?.url ?: return true
+                        // The application UI is a bundled asset. Never allow remote or
+                        // content-provider pages to replace this trusted JavaScript bridge origin.
+                        return !(target.scheme == "file" &&
+                            target.host.isNullOrEmpty() &&
+                            target.path == "/android_asset/sonix_tv.html")
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
@@ -475,7 +485,9 @@ class MainActivity : ComponentActivity() {
 
                 webChromeClient = object : WebChromeClient() {
                     override fun onPermissionRequest(request: PermissionRequest?) {
-                        request?.grant(request.resources)
+                        // SONIX playback and network access are native; the bundled UI
+                        // has no need for camera, microphone, geolocation or other WebView grants.
+                        request?.deny()
                     }
                 }
 
