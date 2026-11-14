@@ -9,6 +9,7 @@ import java.io.ByteArrayOutputStream
 import java.net.InetAddress
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import javax.crypto.spec.SecretKeySpec
 
 @RunWith(RobolectricTestRunner::class)
 class SecurityAndSubtitleAuditTest {
@@ -239,7 +240,10 @@ class SecurityAndSubtitleAuditTest {
     @Test
     fun credentialVault_v2SaveAndRead() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        val vault = CredentialVault(context)
+        // Robolectric does not provide AndroidKeyStore; inject a deterministic AES key
+        // while exercising the exact AES-GCM storage and migration code paths.
+        val testKey = SecretKeySpec(ByteArray(32) { it.toByte() }, "AES")
+        val vault = CredentialVault(context) { testKey }
         vault.clear()
 
         context.getSharedPreferences("sonix_saved_playlists", android.content.Context.MODE_PRIVATE)
