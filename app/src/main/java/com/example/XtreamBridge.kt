@@ -487,7 +487,13 @@ class XtreamBridge(context: Context) {
     @JavascriptInterface
     fun deletePlaylist(id: String): String {
         return try {
+            val deletingActive = vault.isCurrentPlaylist(id)
             vault.deletePlaylist(id)
+            if (deletingActive) {
+                vault.clear()
+                clearCatalogCache()
+                try { com.example.audio.AudioAddonManager.getInstance(appContext, this).onSessionTerminated() } catch (_: Exception) {}
+            }
             vault.playlistsJson()
         } catch (error: Throwable) { errorResult(error) }
     }
@@ -771,6 +777,12 @@ internal class CredentialVault(private val context: Context) {
                 .put("username", row.optString("username")))
         }
         return JSONObject().put("success", true).put("playlists", safe).toString()
+    }
+
+    @Synchronized
+    fun isCurrentPlaylist(id: String): Boolean {
+        val current = read() ?: return false
+        return playlistId(current.server, current.username) == id
     }
 
     @Synchronized
