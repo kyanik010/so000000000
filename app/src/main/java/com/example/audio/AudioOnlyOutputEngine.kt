@@ -10,7 +10,10 @@ import java.net.Socket
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -135,7 +138,12 @@ class AudioOnlyOutputEngine(
     }
 
     private val isRunning = AtomicBoolean(false)
-    private val serverExecutor = Executors.newCachedThreadPool()
+    // Bound local HTTP listener/client threads; the previous cached pool could grow without limit.
+    private val serverExecutor = ThreadPoolExecutor(
+        2, 4, 30L, TimeUnit.SECONDS,
+        ArrayBlockingQueue(8),
+        ThreadPoolExecutor.AbortPolicy()
+    )
     private var serverSocket: ServerSocket? = null
     @Volatile var serverPort: Int = 0
         private set
@@ -350,8 +358,13 @@ class AudioOnlyOutputEngine(
                 }
 
                 clientQueues[client] = queue
-                serverExecutor.execute {
-                    handleClient(client, queue)
+                try {
+                    serverExecutor.execute {
+                        handleClient(client, queue)
+                    }
+                } catch (_: RejectedExecutionException) {
+                    clientQueues.remove(client)
+                    try { client.close() } catch (_: Exception) {}
                 }
             } catch (_: Exception) {
                 break
