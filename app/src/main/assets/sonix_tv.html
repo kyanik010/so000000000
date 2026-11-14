@@ -754,10 +754,31 @@
               <input type="password" id="iptv-password" class="search-input focusable" style="border-radius:8px;" placeholder="كلمة المرور (Password)" />
             </div>
             <button id="btn-save-iptv" class="action-btn focusable settings-action-primary">حفظ واختبار الاتصال</button>
+            <button id="settings-open-playlists" class="action-btn focusable settings-action-secondary">قوائم التشغيل</button>
           </section>
         </div>
         <div class="modal-footer">
           <button id="close-settings-footer" class="action-btn focusable" style="background:var(--selected-item-bg); color:var(--text-white);">إغلاق</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-saved-playlists" class="modal-backdrop" aria-hidden="true">
+      <div class="modal-window saved-playlists-window">
+        <div class="modal-header">
+          <div class="modal-title"><span>قوائم التشغيل</span></div>
+          <button id="close-saved-playlists" class="modal-close-btn focusable" type="button">&times;</button>
+        </div>
+        <div class="modal-body saved-playlists-modal-body">
+          <div id="settings-saved-playlists-list" class="saved-playlists-list" aria-live="polite"></div>
+          <div id="settings-saved-playlist-actions" class="saved-playlist-actions hidden">
+            <button type="button" id="settings-playlist-connect" class="focusable playlist-action-connect">يتصل</button>
+            <button type="button" id="settings-playlist-edit" class="focusable">تعديل</button>
+            <button type="button" id="settings-playlist-delete" class="focusable playlist-action-delete">حذف</button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="close-saved-playlists-footer" class="action-btn focusable">إغلاق</button>
         </div>
       </div>
     </div>
