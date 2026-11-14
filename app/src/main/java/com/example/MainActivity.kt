@@ -741,7 +741,8 @@ class MainActivity : ComponentActivity() {
 
             nativePlayerActive = true
             nativePlayerPlaying = false
-            player.volume = if (nativeVideoMuted) 0f else 1f
+            val externalAudioIsPlaying = externalAudioActive && secondaryAudioPlayer?.isPlaying == true
+            player.volume = if (nativeVideoMuted || externalAudioIsPlaying) 0f else 1f
             // A reused player must not carry a previous item's forced track override.
             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                 .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
