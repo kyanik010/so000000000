@@ -3124,15 +3124,47 @@
         .replace(/[^a-z0-9\u0600-\u06FF]+/g, ' ').trim();
     }
     function classifyAudioSource(name, categoryName, categoryId) {
-      // Provider category IDs are opaque; never use them as brand evidence.
+      // Keep this allow-list aligned with AudioSourceClassifier.kt.
+      // Never classify from opaque provider category IDs.
       const channel = normalizeAudioSourceText(name);
       const category = normalizeAudioSourceText(categoryName);
-      const text = channel + ' ' + category;
-      if (/(^| )(movie|movies|film|films|series|episode|episodes|vod|فيلم|افلام|مسلسل|مسلسلات|حلقة|حلقات)( |$)/.test(category)) return '';
+      const text = (channel + ' ' + category).trim();
+      if (!text) return '';
+
+      // A supported brand name inside a movie/series title is NOT a live channel.
+      const nonLiveTerms = /(^| )(movie|movies|film|films|cinema|series|serial|episode|episodes|season|vod|مشاهده|فيلم|افلام|سينما|مسلسل|مسلسلات|حلقه|حلقات|موسم|الموسم)( |$)/;
+      const episodeCode = /(^| )s[0-9]{1,2}e[0-9]{1,3}( |$)/;
+      const seasonEpisode = /(^| )season [0-9]+ episode [0-9]+( |$)/;
+      if (nonLiveTerms.test(text) || episodeCode.test(text) || seasonEpisode.test(text)) return '';
+
       if (/(^| )(bein sports|bein sport|beinsports|beinsport|be in sports|be in sport)( |$)/.test(text) ||
           /(^| )(بي ان سبورت|بين سبورت|بين سبورتس|بيان سبورت)( |$)/.test(text)) return 'BEIN SPORTS';
       if (/(^| )(alwan|al wan|elwan|الوان)( |$)/.test(text)) return 'ALWAN';
       return '';
+    }
+    function audioSourceQualityRank(channel) {
+      const text = normalizeAudioSourceText((channel && channel.name || '') + ' ' + (channel && channel.categoryName || ''));
+      const levels = [
+        [0, /(^| )sd( |$)/],
+        [1, /(^| )360p?( |$)/],
+        [2, /(^| )480p?( |$)/],
+        [3, /(^| )576p?( |$)/],
+        [4, /(^| )(720p?|hd)( |$)/],
+        [5, /(^| )(1080p?|fhd|full hd)( |$)/],
+        [6, /(^| )(1440p?|qhd)( |$)/],
+        [7, /(^| )(2160p?|uhd|4k)( |$)/],
+        [8, /(^| )(4320p?|8k)( |$)/]
+      ];
+      const found = levels.filter(level => level[1].test(text)).map(level => level[0]);
+      return found.length ? Math.max(...found) : 99;
+    }
+    function compareAudioSourceQuality(a, b) {
+      const qualityDiff = audioSourceQualityRank(a) - audioSourceQualityRank(b);
+      if (qualityDiff) return qualityDiff;
+      const numberA = Number.parseFloat(String(a.number || '').replace(',', '.'));
+      const numberB = Number.parseFloat(String(b.number || '').replace(',', '.'));
+      if (Number.isFinite(numberA) && Number.isFinite(numberB) && numberA !== numberB) return numberA - numberB;
+      return String(a.name || '').localeCompare(String(b.name || ''), undefined, {numeric:true, sensitivity:'base'});
     }
     let audioSourceChannels = [];
     function filterAllowedAudioSources(channels) {
@@ -3152,16 +3184,18 @@
       const available = filterAllowedAudioSources(audioSourceChannels)
         .filter(ch => !query || normalizeAudioSourceText(ch.name).includes(query) || normalizeAudioSourceText(ch.categoryName).includes(query));
       const groups = [
-        {name:'beIN SPORTS',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.categoryId)==='BEIN SPORTS')},
-        {name:'ALWAN',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.categoryId)==='ALWAN')}
+        {name:'قنوات ALWAN',code:'ALWAN',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.categoryId)==='ALWAN').sort(compareAudioSourceQuality)},
+        {name:'قنوات beIN SPORTS',code:'BEIN SPORTS',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.categoryId)==='BEIN SPORTS').sort(compareAudioSourceQuality)}
       ];
       let count = 0;
       groups.forEach(group => {
         if (!group.items.length) return;
+        const section = document.createElement('section');
+        section.className = 'audio-source-group';
         const header = document.createElement('div');
-        header.style.cssText = 'padding:8px 4px 5px;color:var(--accent-gold);font-weight:800;font-size:0.8rem;';
+        header.className = 'audio-source-group-title';
         header.textContent = group.name + ' (' + group.items.length + ')';
-        container.appendChild(header);
+        section.appendChild(header);
         group.items.forEach(ch => {
           const item = document.createElement('div');
           const selected = dualAudioEngine && dualAudioEngine.selectedSourceChannel && String(dualAudioEngine.selectedSourceChannel.id)===String(ch.id);
@@ -3174,8 +3208,9 @@
           category.textContent = ch.categoryName || group.name;
           item.append(name,category);
           item.addEventListener('click',()=>dualAudioEngine.setSourceChannel(ch));
-          container.appendChild(item); count++;
+          section.appendChild(item); count++;
         });
+        container.appendChild(section);
       });
       if (!count) {
         const empty = document.createElement('div'); empty.className = 'audio-picker-item';
