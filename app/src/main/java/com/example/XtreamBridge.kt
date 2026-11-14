@@ -683,28 +683,17 @@ internal class CredentialVault(private val context: Context) {
             .toString()
             .toByteArray(Charsets.UTF_8)
 
-        try {
-            // Primary path: AndroidKeyStore AES/GCM
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-            val encrypted = cipher.doFinal(plain)
-            preferences.edit()
-                .putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-                .remove("fallback_ciphertext")
-                .apply()
-        } catch (e: Throwable) {
-            android.util.Log.w("SONIX", "AndroidKeyStore encryption failed, using device fallback", e)
-            val fallbackKey = getFallbackKey()
-            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-            cipher.init(Cipher.ENCRYPT_MODE, fallbackKey)
-            val encrypted = cipher.doFinal(plain)
-            preferences.edit()
-                .putString("fallback_ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                .remove("ciphertext")
-                .remove("iv")
-                .apply()
-        }
+        // New credentials are written only with authenticated Android Keystore AES-GCM.
+        // Never create new ECB/device-ID encrypted records.
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        val encrypted = cipher.doFinal(plain)
+        val committed = preferences.edit()
+            .putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
+            .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .remove("fallback_ciphertext")
+            .commit()
+        check(committed) { "تعذر حفظ بيانات الاشتراك المشفرة" }
     }
 
     fun read(): StoredCredentials? {
@@ -731,7 +720,7 @@ internal class CredentialVault(private val context: Context) {
             }
         }
 
-        // 2. Check fallback storage
+        // 2. Read legacy ECB records only for one-time migration. Never write this format again.
         val fallbackEncoded = preferences.getString("fallback_ciphertext", null)
         if (!fallbackEncoded.isNullOrBlank()) {
             try {
@@ -739,13 +728,19 @@ internal class CredentialVault(private val context: Context) {
                 cipher.init(Cipher.DECRYPT_MODE, getFallbackKey())
                 val plain = cipher.doFinal(Base64.decode(fallbackEncoded, Base64.NO_WRAP))
                 val json = JSONObject(String(plain, Charsets.UTF_8))
-                return StoredCredentials(
+                val credentials = StoredCredentials(
                     json.getString("server"),
                     json.getString("username"),
                     json.getString("password")
                 )
-            } catch (e: Throwable) {
-                android.util.Log.w("SONIX", "Fallback decrypt failed", e)
+                try {
+                    save(credentials.server, credentials.username, credentials.password)
+                } catch (migrationError: Exception) {
+                    android.util.Log.w("SONIX", "Legacy credential migration unavailable: ${migrationError.javaClass.simpleName}")
+                }
+                return credentials
+            } catch (e: Exception) {
+                android.util.Log.w("SONIX", "Legacy credential decrypt failed: ${e.javaClass.simpleName}")
             }
         }
 
@@ -847,14 +842,21 @@ internal class CredentialVault(private val context: Context) {
                 android.util.Log.w("SONIX", "Unable to decrypt saved playlists with Keystore", error)
             }
         }
+        // Legacy ECB playlist rows are readable for migration, but never written again.
         val fallback = prefs.getString("fallback_ciphertext", null)
         if (!fallback.isNullOrBlank()) {
             try {
                 val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
                 cipher.init(Cipher.DECRYPT_MODE, getFallbackKey())
-                return JSONArray(String(cipher.doFinal(Base64.decode(fallback, Base64.NO_WRAP)), Charsets.UTF_8))
-            } catch (error: Throwable) {
-                android.util.Log.w("SONIX", "Unable to decrypt saved playlists fallback", error)
+                val rows = JSONArray(String(cipher.doFinal(Base64.decode(fallback, Base64.NO_WRAP)), Charsets.UTF_8))
+                try {
+                    writePlaylistRows(rows)
+                } catch (migrationError: Exception) {
+                    android.util.Log.w("SONIX", "Legacy playlist migration unavailable: ${migrationError.javaClass.simpleName}")
+                }
+                return rows
+            } catch (error: Exception) {
+                android.util.Log.w("SONIX", "Unable to decrypt legacy saved playlists: ${error.javaClass.simpleName}")
             }
         }
         return JSONArray()
@@ -863,20 +865,15 @@ internal class CredentialVault(private val context: Context) {
     private fun writePlaylistRows(rows: JSONArray) {
         val prefs = context.getSharedPreferences("sonix_saved_playlists", Context.MODE_PRIVATE)
         val plain = rows.toString().toByteArray(Charsets.UTF_8)
-        try {
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-            val encrypted = cipher.doFinal(plain)
-            prefs.edit().putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-                .remove("fallback_ciphertext").apply()
-        } catch (error: Throwable) {
-            android.util.Log.w("SONIX", "Keystore playlist encryption unavailable; using device fallback", error)
-            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-            cipher.init(Cipher.ENCRYPT_MODE, getFallbackKey())
-            prefs.edit().putString("fallback_ciphertext", Base64.encodeToString(cipher.doFinal(plain), Base64.NO_WRAP))
-                .remove("ciphertext").remove("iv").apply()
-        }
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        val encrypted = cipher.doFinal(plain)
+        val committed = prefs.edit()
+            .putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
+            .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .remove("fallback_ciphertext")
+            .commit()
+        check(committed) { "تعذر حفظ قوائم التشغيل المشفرة" }
     }
 
     fun clear() {
