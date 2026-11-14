@@ -2233,7 +2233,9 @@
 
     // Central SONIX CONTROL settings and message delivery.
     window.onSonixControlSync = function (payload) {
-      if (!payload || payload.status !== 'active') return;
+      if (!payload) return;
+      refreshLoginDeviceCode();
+      if (payload.status !== 'active') return;
       const serverLists = ['login-server', 'iptv-server-url'];
       const availableServers = Array.isArray(payload.servers) ? payload.servers : [];
       serverLists.forEach(serverId => {
