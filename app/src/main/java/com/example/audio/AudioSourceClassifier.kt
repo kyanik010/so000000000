@@ -30,7 +30,16 @@ object AudioSourceClassifier {
     }
 
     fun classify(name: String?, categoryName: String? = null, categoryId: String? = null): AudioChannelGroup {
-        val text = listOf(normalize(name), normalize(categoryName))
+        val normalizedCategory = normalize(categoryName)
+        val nonLiveCategoryTerms = listOf(
+            "movie", "movies", "film", "films", "series", "episode", "episodes", "vod",
+            "فيلم", "افلام", "مسلسل", "مسلسلات", "حلقة", "حلقات"
+        )
+        if (nonLiveCategoryTerms.any { hasPhrase(normalizedCategory, it) }) {
+            return AudioChannelGroup.OTHER
+        }
+
+        val text = listOf(normalize(name), normalizedCategory)
             .filter { it.isNotBlank() }
             .joinToString(" ")
         if (text.isBlank()) return AudioChannelGroup.OTHER
