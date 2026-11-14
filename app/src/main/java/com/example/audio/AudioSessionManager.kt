@@ -45,7 +45,7 @@ class AudioSessionManager {
         // Stop and recycle any existing session first
         stopCurrentSession()
 
-        val sessionId = UUID.randomUUID().toString().take(8)
+        val sessionId = UUID.randomUUID().toString()
         val safeSourceLog = CredentialSanitizer.sanitizeUrl(sourceUrl)
         AudioLog.i(TAG, "Starting audio session: id=$sessionId, streamId=$streamId, url=$safeSourceLog")
 
