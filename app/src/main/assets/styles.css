@@ -2641,6 +2641,28 @@
     .tv-quick-btn:focus,.tv-quick-btn.keyboard-focused{background:var(--selected-item-bg) !important;border-color:var(--focus-blue) !important;box-shadow:0 0 0 2px var(--focus-blue) !important}
     .sonix-login-card button{min-height:38px;border:0;border-radius:8px;background:var(--accent-gold);color:#0A0F14;font:inherit;font-weight:900}
     #sonix-login-message{min-height:16px;color:var(--danger-red);font-size:.78rem;text-align:center}
+
+    /* Login screen: saved playlists on the left, centered login, device code on the right. */
+    #sonix-login-screen{display:grid;grid-template-columns:minmax(190px,1fr) minmax(390px,1.9fr) minmax(145px,.78fr);grid-template-areas:"playlists form device";gap:clamp(12px,2vw,30px);align-items:center;justify-items:stretch;padding:clamp(14px,2.5vw,38px)}
+    #sonix-login-screen.hidden{display:none}
+    .sonix-login-card{grid-area:form;width:100%;max-width:720px;justify-self:center;padding:clamp(16px,2vw,28px);gap:clamp(9px,1.4vh,14px);border-radius:24px}
+    .login-playlists-panel{grid-area:playlists;direction:rtl;align-self:stretch;min-height:0;max-height:min(70vh,560px);display:flex;flex-direction:column;gap:12px;padding:clamp(12px,1.5vw,20px);border:1px solid rgba(255,255,255,.1);border-radius:20px;background:rgba(14,25,42,.72);box-shadow:0 14px 38px rgba(0,0,0,.25);overflow:hidden}
+    .login-playlists-panel h2{font-size:clamp(.95rem,1.35vw,1.25rem);font-weight:900;color:var(--accent-gold);text-align:center}
+    .saved-playlists-list{display:flex;flex-direction:column;gap:8px;overflow-y:auto;min-height:0}
+    .saved-playlist-item{width:100%;min-height:42px;padding:8px 11px;border:1px solid rgba(143,184,232,.2);border-radius:10px;background:rgba(35,58,85,.72);color:var(--text-white);font:inherit;font-size:clamp(.76rem,1vw,.92rem);font-weight:800;text-align:right;direction:rtl}
+    .saved-playlist-item.selected{border-color:var(--focus-blue);background:rgba(57,105,148,.55);box-shadow:0 0 14px rgba(143,184,232,.18)}
+    .saved-playlists-empty{color:var(--text-muted);font-size:.76rem;text-align:center;padding:12px 4px}
+    .saved-playlist-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+    .saved-playlist-actions.hidden{display:none}
+    .saved-playlist-actions button{min-height:34px;border:1px solid var(--border-panel);border-radius:8px;background:var(--surface-panel);color:var(--text-white);font:inherit;font-size:.72rem;font-weight:800}
+    .saved-playlist-actions .playlist-action-connect{background:var(--accent-gold);color:#101820}
+    .saved-playlist-actions .playlist-action-delete{color:#ff8d80}
+    .login-device-panel{grid-area:device;direction:rtl;align-self:center;justify-self:stretch;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-width:0;min-height:112px;padding:14px 8px;border:1px solid rgba(143,184,232,.28);border-radius:18px;background:rgba(14,25,42,.72);box-shadow:0 12px 32px rgba(0,0,0,.22)}
+    .login-device-label{color:var(--text-silver);font-size:.85rem;font-weight:800}
+    #login-device-code{max-width:100%;color:var(--accent-gold);font-family:ui-monospace,monospace;font-size:clamp(.82rem,1.25vw,1.05rem);letter-spacing:.07em;text-align:center;overflow-wrap:anywhere}
+    @media(max-width:760px){#sonix-login-screen{grid-template-columns:minmax(0,1fr) minmax(0,1.7fr);grid-template-areas:"playlists form" "device form";gap:10px;padding:10px}.login-playlists-panel{max-height:48vh;padding:9px}.login-device-panel{min-height:64px;padding:8px}.sonix-login-card{max-height:94vh}}
+    @media(max-width:520px){#sonix-login-screen{grid-template-columns:1fr;grid-template-areas:"device" "form" "playlists";align-content:center;overflow-y:auto}.login-device-panel{min-height:54px}.login-playlists-panel{max-height:23vh}.sonix-login-card{max-width:100%;max-height:none}}
+
     .provider-logo{width:30px;height:30px;object-fit:contain;border-radius:5px;background:#fff;padding:2px;box-sizing:border-box}
   
     /* SONIX series browser: select a season, then browse clear episode cards. */
