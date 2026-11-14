@@ -2277,6 +2277,8 @@
       // An empty list is not a customer-facing error; keep the login message
       // area reserved for actual credential/login errors only.
       setLoginMessage('');
+      refreshLoginDeviceCode();
+      refreshSavedPlaylists();
       applySonixRemoteTheme(payload.theme);
       (payload.messages || []).forEach(message => {
         const title = String(message && message.title || '').trim();
@@ -2457,11 +2459,104 @@
       const pe=document.getElementById('profile-expiry'); if(pe) pe.textContent=exp>0?new Date(exp*1000).toLocaleDateString('ar'):'غير محدد';
       const pp=document.getElementById('profile-package'); if(pp) pp.textContent=accountInfo.status || '—';
     }
+    let selectedSavedPlaylistId = '';
+    function refreshLoginDeviceCode() {
+      const target = document.getElementById('login-device-code');
+      if (!target || !window.SonixControlBridge || !window.SonixControlBridge.deviceCode) return;
+      try {
+        const code = String(window.SonixControlBridge.deviceCode() || '').trim();
+        target.textContent = /^[A-Z0-9]{10}$/.test(code) ? code : 'سيظهر بعد الاتصال';
+      } catch (_) { target.textContent = 'سيظهر بعد الاتصال'; }
+    }
+    function refreshSavedPlaylists() {
+      const list = document.getElementById('saved-playlists-list');
+      const actions = document.getElementById('saved-playlist-actions');
+      if (!list || !window.XtreamBridge || !window.XtreamBridge.savedPlaylists) return;
+      try {
+        const result = parseNative(window.XtreamBridge.savedPlaylists());
+        const rows = Array.isArray(result.playlists) ? result.playlists : [];
+        list.replaceChildren();
+        if (!rows.length) {
+          const empty = document.createElement('div');
+          empty.className = 'saved-playlists-empty';
+          empty.textContent = 'لا توجد قوائم محفوظة بعد';
+          list.appendChild(empty);
+          selectedSavedPlaylistId = '';
+          if (actions) actions.classList.add('hidden');
+          return;
+        }
+        rows.forEach(item => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'saved-playlist-item focusable' + (item.id === selectedSavedPlaylistId ? ' selected' : '');
+          button.textContent = item.label || item.server || 'قائمة تشغيل';
+          button.addEventListener('click', () => {
+            selectedSavedPlaylistId = item.id;
+            refreshSavedPlaylists();
+            if (remoteNavigator) remoteNavigator.focusElement(document.querySelector('.saved-playlist-item.selected'));
+          });
+          list.appendChild(button);
+        });
+        if (!rows.some(item => item.id === selectedSavedPlaylistId)) selectedSavedPlaylistId = '';
+        if (actions) actions.classList.toggle('hidden', !selectedSavedPlaylistId);
+      } catch (error) {
+        console.warn('Unable to load saved playlists', error);
+      }
+    }
+    function connectSavedPlaylist() {
+      if (!selectedSavedPlaylistId) return;
+      try {
+        parseNative(window.XtreamBridge.activatePlaylist(selectedSavedPlaylistId));
+        const result = parseNative(window.XtreamBridge.restoreSession());
+        activeCredentials = {server:result.server_info && result.server_info.url || '', username:(result.user_info && result.user_info.username) || ''};
+        updateAccount(result.user_info || {});
+        const loginScreen = document.getElementById('sonix-login-screen');
+        if (loginScreen.contains(document.activeElement)) document.activeElement.blur();
+        loginScreen.classList.add('hidden');
+        switchView('view-home');
+        if (remoteNavigator) remoteNavigator.focusElement(document.getElementById('card-movies'));
+        window.setTimeout(prepareCatalogHome, 0);
+        showToast('تم الاتصال بالقائمة المحفوظة');
+      } catch (error) {
+        setLoginMessage(error.message || 'تعذر الاتصال بالقائمة المحفوظة');
+      }
+    }
+    function editSavedPlaylist() {
+      if (!selectedSavedPlaylistId) return;
+      try {
+        const rows = parseNative(window.XtreamBridge.savedPlaylists()).playlists || [];
+        const item = rows.find(row => row.id === selectedSavedPlaylistId);
+        if (!item) return;
+        const server = document.getElementById('login-server');
+        server.value = item.server || '';
+        document.getElementById('login-username').value = item.username || '';
+        document.getElementById('login-password').value = '';
+        setLoginMessage('أدخل كلمة المرور الجديدة ثم اضغط تسجيل الدخول لحفظ التعديل');
+        const password = document.getElementById('login-password');
+        if (remoteNavigator) remoteNavigator.focusElement(password);
+        else password.focus();
+      } catch (error) { setLoginMessage(error.message || 'تعذر فتح القائمة للتعديل'); }
+    }
+    function deleteSavedPlaylist() {
+      if (!selectedSavedPlaylistId) return;
+      if (!window.confirm('هل تريد حذف قائمة التشغيل المحفوظة؟')) return;
+      try {
+        parseNative(window.XtreamBridge.deletePlaylist(selectedSavedPlaylistId));
+        selectedSavedPlaylistId = '';
+        refreshSavedPlaylists();
+        showToast('تم حذف قائمة التشغيل');
+      } catch (error) { setLoginMessage(error.message || 'تعذر حذف القائمة'); }
+    }
+
     function performXtreamLogin(server,username,password,offlineFallback) {
       const button=document.getElementById('login-submit');
       button.disabled=true;button.textContent='جارٍ التحقق من الاشتراك...';setLoginMessage('');
       try {
         const result=parseNative(window.XtreamBridge.login(server,username,password));
+        const serverSelect=document.getElementById('login-server');
+        const playlistLabel=serverSelect && serverSelect.selectedOptions && serverSelect.selectedOptions[0] ? serverSelect.selectedOptions[0].textContent : '';
+        parseNative(window.XtreamBridge.saveCurrentPlaylist(playlistLabel || server));
+        refreshSavedPlaylists();
         activeCredentials={server:server.trim().replace(/\/+$/,''),username:result.user_info.username || username};
         updateAccount(result.user_info);
         const loginScreen = document.getElementById('sonix-login-screen');
@@ -3164,6 +3259,12 @@
         });
       });
 
+      document.getElementById('playlist-connect').addEventListener('click', connectSavedPlaylist);
+      document.getElementById('playlist-edit').addEventListener('click', editSavedPlaylist);
+      document.getElementById('playlist-delete').addEventListener('click', deleteSavedPlaylist);
+      refreshSavedPlaylists();
+      refreshLoginDeviceCode();
+
       document.getElementById('login-submit').addEventListener('click', () => performXtreamLogin(
         document.getElementById('login-server').value,
         document.getElementById('login-username').value,
@@ -3283,6 +3384,8 @@
         }
       });
 
+      refreshSavedPlaylists();
+      refreshLoginDeviceCode();
       try {
         const saved = parseNative(window.XtreamBridge.savedCredentials());
         document.getElementById('login-server').value = saved.server || '';
