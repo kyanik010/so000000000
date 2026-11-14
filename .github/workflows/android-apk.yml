@@ -68,6 +68,11 @@ jobs:
           set -euo pipefail
           test -n "$STORE_PASSWORD"
           test -n "$KEY_PASSWORD"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]] || { echo "VERSION_CODE must be a positive integer"; exit 1; }
+            (( VERSION_CODE <= 2147483647 )) || { echo "VERSION_CODE exceeds Android's integer limit"; exit 1; }
+            [[ "$VERSION_NAME" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,39}$ ]] || { echo "VERSION_NAME contains unsupported characters"; exit 1; }
+          fi
           gradle --no-daemon :app:assembleRelease
 
       - name: Upload signed release APK
