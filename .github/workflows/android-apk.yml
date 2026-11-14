@@ -11,6 +11,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'SONIX release version name, for example 2.1.0'
+        required: true
+        type: string
+      version_code:
+        description: 'Android versionCode; must be greater than every installed release'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -50,6 +59,8 @@ jobs:
       - name: Build signed release APK
         if: github.event_name != 'pull_request'
         env:
+          VERSION_CODE: ${{ github.event.inputs.version_code || '1' }}
+          VERSION_NAME: ${{ github.event.inputs.version_name || '1.0.0' }}
           KEYSTORE_PATH: ${{ runner.temp }}/sonix-release-key.p12
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -71,3 +82,38 @@ jobs:
       - name: Remove temporary release keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/sonix-release-key.p12"
+
+  publish-release:
+    needs: build-and-test
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sonix-tv-release-apk
+          path: release-assets
+
+      - name: Generate SHA-256 manifest
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(release-assets/*.apk)
+          test "${#apks[@]}" -eq 1
+          sha256sum "${apks[0]}" > release-assets/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sonix-v${{ github.event.inputs.version_name }}
+          name: SONIX ${{ github.event.inputs.version_name }}
+          body: |
+            SONIX application release
+            - Version: ${{ github.event.inputs.version_name }}
+            - Android versionCode: ${{ github.event.inputs.version_code }}
+            - APK SHA-256 is included in SHA256SUMS.txt
+          files: |
+            release-assets/*.apk
+            release-assets/SHA256SUMS.txt
