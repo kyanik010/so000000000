@@ -41,7 +41,8 @@ class SonixControlClient(context: Context) {
                     .put("os_version", Build.VERSION.RELEASE ?: "")
                     .put("app_version", app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "")
                     .put("app_version_code", currentVersionCode())
-                    .put("app_abi", Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"))
+                    .put("app_abi", Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown")
+                    .put("app_abis", org.json.JSONArray(Build.SUPPORTED_ABIS.toList())))
                 onSync?.invoke(result)
                 checkForAppUpdate()
             } catch (e: Exception) {
