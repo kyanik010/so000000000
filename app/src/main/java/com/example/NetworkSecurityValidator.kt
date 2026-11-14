@@ -41,7 +41,7 @@ internal object NetworkSecurityValidator {
             "بروتوكول الرابط غير مسموح (يجب أن يكون http أو https)"
         }
 
-        val host = uri.host?.lowercase()
+        val host = uri.host?.removePrefix("[")?.removeSuffix("]")?.lowercase()
         require(!host.isNullOrBlank()) { "عنوان المضيف في الرابط فارغ" }
 
         // 1. Check blocked hostnames
