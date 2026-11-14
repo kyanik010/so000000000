@@ -232,7 +232,21 @@ class SecurityAndSubtitleAuditTest {
         val vault = CredentialVault(context)
         vault.clear()
 
+        context.getSharedPreferences("sonix_saved_playlists", android.content.Context.MODE_PRIVATE)
+            .edit().clear().commit()
+
         vault.save("http://my-iptv.com:8080", "sonix_user", "sonix_password")
+        val accountPrefs = context.getSharedPreferences("sonix_secure_account", android.content.Context.MODE_PRIVATE)
+        assertNotNull("New account data must use AES-GCM ciphertext", accountPrefs.getString("ciphertext", null))
+        assertNotNull("AES-GCM IV must be persisted", accountPrefs.getString("iv", null))
+        assertNull("New account data must never be written using legacy ECB", accountPrefs.getString("fallback_ciphertext", null))
+
+        vault.savePlaylist("my-iptv.com", "http://my-iptv.com:8080", "sonix_user", "sonix_password")
+        val playlistPrefs = context.getSharedPreferences("sonix_saved_playlists", android.content.Context.MODE_PRIVATE)
+        assertNotNull("New playlists must use AES-GCM ciphertext", playlistPrefs.getString("ciphertext", null))
+        assertNotNull("Playlist AES-GCM IV must be persisted", playlistPrefs.getString("iv", null))
+        assertNull("New playlists must never be written using legacy ECB", playlistPrefs.getString("fallback_ciphertext", null))
+
         val loaded = vault.read()
 
         assertNotNull(loaded)
