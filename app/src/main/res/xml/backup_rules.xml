@@ -2,4 +2,6 @@
 <full-backup-content>
     <!-- Exclude Keystore-encrypted credential preferences because the Keystore AES master key cannot be restored across backups. -->
     <exclude domain="sharedpref" path="sonix_secure_account.xml"/>
+    <exclude domain="sharedpref" path="sonix_saved_playlists.xml"/>
+    <exclude domain="file" path="sonix_audio_sources_v1.json"/>
 </full-backup-content>
