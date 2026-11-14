@@ -435,7 +435,7 @@ class MainActivity : ComponentActivity() {
                 settings.apply {
                     javaScriptEnabled = true
                     domStorageEnabled = true
-                    databaseEnabled = false
+                    databaseEnabled = true
                     mediaPlaybackRequiresUserGesture = false
                     javaScriptCanOpenWindowsAutomatically = false
                     setSupportMultipleWindows(false)
@@ -2450,7 +2450,7 @@ class MainActivity : ComponentActivity() {
         immersiveVideoFullscreen = false
         applyVideoFullscreenSystemUi()
         detachExternalAudioInternal(false)
-        try { com.example.audio.AudioAddonManager.getInstance(applicationContext, xtreamBridge).shutdown() } catch (_: Exception) {}
+        com.example.audio.AudioAddonManager.shutdownInstance()
         stopNativePlayer()
         if (::sonixControlClient.isInitialized) sonixControlClient.shutdown()
         if (::xtreamBridge.isInitialized) xtreamBridge.shutdown()
