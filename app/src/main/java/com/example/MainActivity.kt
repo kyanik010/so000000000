@@ -2470,6 +2470,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        AppUpdateInstaller.resumePendingInstall(this)
         if (immersiveVideoFullscreen) window.decorView.post { applyVideoFullscreenSystemUi() }
         webView?.onResume()
         if (::sonixControlClient.isInitialized && sonixControlPageReady) sonixControlClient.sync()
