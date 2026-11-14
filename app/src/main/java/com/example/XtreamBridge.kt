@@ -672,7 +672,11 @@ class XtreamBridge(context: Context) {
  * with resilient fallback encryption for cheap Android TV boxes where
  * hardware AndroidKeyStore is unstable or unsupported.
  */
-internal class CredentialVault(private val context: Context) {
+internal class CredentialVault(
+    private val context: Context,
+    private val keyProvider: (() -> SecretKey)? = null
+) {
+    private fun encryptionKey(): SecretKey = keyProvider?.invoke() ?: encryptionKey()
     private val preferences = context.getSharedPreferences("sonix_secure_account", Context.MODE_PRIVATE)
 
     fun save(server: String, username: String, password: String) {
@@ -686,7 +690,7 @@ internal class CredentialVault(private val context: Context) {
         // New credentials are written only with authenticated Android Keystore AES-GCM.
         // Never create new ECB/device-ID encrypted records.
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        cipher.init(Cipher.ENCRYPT_MODE, encryptionKey())
         val encrypted = cipher.doFinal(plain)
         val committed = preferences.edit()
             .putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
@@ -705,7 +709,7 @@ internal class CredentialVault(private val context: Context) {
                 val cipher = Cipher.getInstance(TRANSFORMATION)
                 cipher.init(
                     Cipher.DECRYPT_MODE,
-                    getOrCreateKey(),
+                    encryptionKey(),
                     GCMParameterSpec(128, Base64.decode(encodedIv, Base64.NO_WRAP))
                 )
                 val plain = cipher.doFinal(Base64.decode(encoded, Base64.NO_WRAP))
@@ -836,7 +840,7 @@ internal class CredentialVault(private val context: Context) {
         if (!encrypted.isNullOrBlank() && !iv.isNullOrBlank()) {
             try {
                 val cipher = Cipher.getInstance(TRANSFORMATION)
-                cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
+                cipher.init(Cipher.DECRYPT_MODE, encryptionKey(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
                 return JSONArray(String(cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)), Charsets.UTF_8))
             } catch (error: Throwable) {
                 android.util.Log.w("SONIX", "Unable to decrypt saved playlists with Keystore", error)
@@ -866,7 +870,7 @@ internal class CredentialVault(private val context: Context) {
         val prefs = context.getSharedPreferences("sonix_saved_playlists", Context.MODE_PRIVATE)
         val plain = rows.toString().toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        cipher.init(Cipher.ENCRYPT_MODE, encryptionKey())
         val encrypted = cipher.doFinal(plain)
         val committed = prefs.edit()
             .putString("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
