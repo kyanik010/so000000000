@@ -2,7 +2,7 @@ package com.example.audio
 
 import android.content.Context
 import android.system.Os
-import android.os.Build
+import com.example.NetworkSecurityValidator
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -92,15 +92,7 @@ class AudioM3uCatalog(context: Context) {
     }
 
     private fun downloadAndParse(rawUrl: String): JSONArray {
-        val connection = (URL(rawUrl).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 15000
-            readTimeout = 25000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "SONIX-TV/1.0")
-            setRequestProperty("Accept", "audio/x-mpegurl, application/vnd.apple.mpegurl, text/plain, */*")
-            setRequestProperty("Accept-Encoding", "gzip")
-        }
+        val connection = openSafeM3uConnection(rawUrl)
         try {
             val code = connection.responseCode
             if (code !in 200..299) throw IllegalStateException("فشل جلب قائمة M3U (HTTP $code)")
@@ -109,6 +101,7 @@ class AudioM3uCatalog(context: Context) {
             var pendingGroup = ""
             var channelNumber = 0
             var totalChars = 0
+            val validatedStreamHosts = HashSet<String>()
 
             val responseStream: InputStream = if (connection.contentEncoding.equals("gzip", ignoreCase = true)) {
                 GZIPInputStream(connection.inputStream, 64 * 1024)
@@ -144,6 +137,9 @@ class AudioM3uCatalog(context: Context) {
                                 val absoluteUrl = try { URL(URL(rawUrl), line).toString() } catch (_: Exception) { "" }
                                 val uri = try { URL(absoluteUrl) } catch (_: Exception) { null }
                                 if (uri != null && (uri.protocol == "http" || uri.protocol == "https") && uri.host.isNotBlank()) {
+                                    if (validatedStreamHosts.add(uri.host.lowercase())) {
+                                        NetworkSecurityValidator.assertSafeUrl(absoluteUrl)
+                                    }
                                     channelNumber++
                                     val extension = uri.path.substringAfterLast('.', "").lowercase()
                                         .takeIf { it.matches(Regex("[a-z0-9]{1,8}")) } ?: "m3u8"
@@ -169,6 +165,40 @@ class AudioM3uCatalog(context: Context) {
         } finally {
             connection.disconnect()
         }
+    }
+
+    /**
+     * Follow M3U redirects manually so every destination is checked before a request.
+     * HTTP remains supported for IPTV providers; only unsafe local/metadata targets are blocked.
+     */
+    private fun openSafeM3uConnection(rawUrl: String): HttpURLConnection {
+        var current = URL(rawUrl)
+        repeat(6) { redirectIndex ->
+            NetworkSecurityValidator.assertSafeUrl(current.toString())
+            val connection = (current.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15000
+                readTimeout = 25000
+                instanceFollowRedirects = false
+                setRequestProperty("User-Agent", "SONIX-TV/1.0")
+                setRequestProperty("Accept", "audio/x-mpegurl, application/vnd.apple.mpegurl, text/plain, */*")
+                setRequestProperty("Accept-Encoding", "gzip")
+            }
+            val status = try { connection.responseCode } catch (error: Exception) {
+                connection.disconnect()
+                throw error
+            }
+            if (status in 300..399) {
+                val location = connection.getHeaderField("Location")
+                connection.disconnect()
+                if (location.isNullOrBlank()) throw IllegalStateException("أعاد خادم قائمة M3U تحويلاً دون وجهة")
+                if (redirectIndex == 5) throw IllegalStateException("تجاوزت قائمة M3U عدد التحويلات المسموح")
+                current = URL(current, location)
+            } else {
+                return connection
+            }
+        }
+        throw IllegalStateException("تعذر فتح قائمة M3U بعد التحويلات")
     }
 
     private fun attribute(line: String, name: String): String {
