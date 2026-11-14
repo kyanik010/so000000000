@@ -226,6 +226,7 @@ class SecurityAndSubtitleAuditTest {
         assertTrue(NetworkSecurityValidator.isBlockedAddress(InetAddress.getByName("127.1.2.3")))
         assertTrue(NetworkSecurityValidator.isBlockedAddress(InetAddress.getByName("169.254.1.1")))
         assertTrue(NetworkSecurityValidator.isBlockedAddress(InetAddress.getByName("169.254.169.254")))
+        assertTrue(NetworkSecurityValidator.isBlockedAddress(InetAddress.getByName("fd00:ec2::254")))
 
         // Private LAN addresses are allowed
         assertFalse(NetworkSecurityValidator.isBlockedAddress(InetAddress.getByName("192.168.1.1")))
