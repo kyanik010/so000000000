@@ -552,11 +552,8 @@
       }
 
       toggleMute() {
-        if (dualAudioEngine && dualAudioEngine.isActive) {
-          showToast('الصوت الأساسي مكتوم تلقائياً أثناء تشغيل مصدر صوت خارجي');
-          return;
-        }
         this.isMuted = !this.isMuted;
+        // Native applies the same mute state to both video A and external audio B.
         if (window.NativePlayback) window.NativePlayback.setMuted(this.isMuted);
         const label=document.getElementById('mute-label');
         if(label) label.textContent=this.isMuted ? 'إلغاء الكتم' : 'كتم الصوت';
@@ -900,9 +897,9 @@
         if (payload && payload.error) showToast(payload.error);
         return;
       }
-      audioSourceChannels = Array.isArray(payload.channels) ? payload.channels : [];
+      audioSourceChannels = filterAllowedAudioSources(payload.channels);
       renderAudioSourcePicker(document.getElementById('audio-src-filter')?.value || '');
-      const count = Number(payload.count || audioSourceChannels.length);
+      const count = audioSourceChannels.length;
       if (status) status.textContent = (payload.cached ? 'المصادر محفوظة محلياً' : 'اكتملت المزامنة') + ' · ' + count + ' قناة';
       if (payload.warning) showToast(payload.warning);
       else showToast(payload.cached ? 'تم تحميل مصادر الصوت المحفوظة' : 'تمت مزامنة مصادر الصوت وحفظها على الجهاز');
@@ -3010,17 +3007,39 @@
       }
     }
 
+    function normalizeAudioSourceText(value) {
+      return String(value || '').toLowerCase()
+        .replace(/[\\u064B-\\u065F\\u0670]/g, '')
+        .replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')
+        .replace(/[^a-z0-9\\u0600-\\u06FF]+/g, ' ').trim();
+    }
     function classifyAudioSource(name, categoryName, categoryId) {
-      const searchable = (String(name || '') + ' ' + String(categoryName || '') + ' ' + String(categoryId || '')).toLowerCase().replace(/[\u064B-\u065F\u0670]/g, '').replace(/[أإآ]/g, 'ا').replace(/[^a-z0-9\u0600-\u06FF]+/g, ' ').trim();
-      const bein = ['bein sports','bein sport','beinsports','beinsport','be in sports','be in sport','بي ان سبورت','بي ان','بين سبورت'].some(term => searchable.includes(term));
-      if (bein) return 'BEIN SPORTS'; if (/\b(alwan|al wan)\b/.test(searchable) || searchable.includes('الوان')) return 'ALWAN'; return '';
+      // Provider category IDs are opaque; never use them as brand evidence.
+      const channel = normalizeAudioSourceText(name);
+      const category = normalizeAudioSourceText(categoryName);
+      const text = channel + ' ' + category;
+      if (/(^| )(bein sports|bein sport|beinsports|beinsport|be in sports|be in sport)( |$)/.test(text) ||
+          /(^| )(بي ان سبورت|بين سبورت|بين سبورتس|بيان سبورت)( |$)/.test(text)) return 'BEIN SPORTS';
+      if (/(^| )(alwan|al wan|elwan|الوان)( |$)/.test(text)) return 'ALWAN';
+      return '';
     }
     let audioSourceChannels = [];
+    function filterAllowedAudioSources(channels) {
+      if (!Array.isArray(channels)) return [];
+      const seen = new Set();
+      return channels.filter(ch => {
+        if (!ch || !ch.url || !ch.id || !classifyAudioSource(ch.name, ch.categoryName, ch.categoryId)) return false;
+        const key = String(ch.id);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
     function renderAudioSourcePicker(filterText = '') {
       const container = document.getElementById('audio-channels-list'); if (!container) return; container.replaceChildren();
-      const query = String(filterText || '').trim().toLowerCase();
-      const available = audioSourceChannels.filter(ch => ch && ch.url)
-        .filter(ch => !query || String(ch.name || '').toLowerCase().includes(query) || String(ch.categoryName || '').toLowerCase().includes(query));
+      const query = normalizeAudioSourceText(filterText);
+      const available = filterAllowedAudioSources(audioSourceChannels)
+        .filter(ch => !query || normalizeAudioSourceText(ch.name).includes(query) || normalizeAudioSourceText(ch.categoryName).includes(query));
       const groups = [
         {name:'beIN SPORTS',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.categoryId)==='BEIN SPORTS')},
         {name:'ALWAN',items:available.filter(ch => classifyAudioSource(ch.name,ch.categoryName,ch.categoryId)==='ALWAN')}
