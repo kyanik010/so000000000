@@ -383,7 +383,7 @@ class AudioOnlyOutputEngine(
             val requestParts = requestLine.split(' ')
             val expectedPath = "/sonix_audio_stream_$sessionId.aac"
             if (requestParts.size < 3 || requestParts[0] != "GET" || requestParts[1] != expectedPath) {
-                output.write("HTTP/1.1 404 Not Found\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n".toByteArray(Charsets.UTF_8))
+                output.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.UTF_8))
                 output.flush()
                 return
             }
