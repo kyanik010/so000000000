@@ -36,6 +36,16 @@ class AudioAddonManager(
                 instance ?: AudioAddonManager(context.applicationContext, xtreamBridge).also { instance = it }
             }
         }
+
+        /** Shut down only an existing instance; never create one during Activity teardown. */
+        fun shutdownInstance() {
+            val current = synchronized(this) {
+                val existing = instance
+                instance = null
+                existing
+            }
+            current?.shutdown()
+        }
     }
 
     fun isAutoActivated(): Boolean = isAddonActive
