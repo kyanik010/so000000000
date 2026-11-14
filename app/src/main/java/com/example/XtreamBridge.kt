@@ -767,8 +767,16 @@ internal class CredentialVault(private val context: Context) {
 
     @Synchronized
     fun playlistsJson(): String {
+        var rows = readPlaylistRows()
+        if (rows.length() == 0) {
+            val active = read()
+            if (active != null) {
+                val fallbackLabel = active.server.substringAfter("://").substringBefore("/")
+                savePlaylist(fallbackLabel, active.server, active.username, active.password)
+                rows = readPlaylistRows()
+            }
+        }
         val safe = JSONArray()
-        val rows = readPlaylistRows()
         for (i in 0 until rows.length()) {
             val row = rows.optJSONObject(i) ?: continue
             safe.put(JSONObject().put("id", row.optString("id"))
