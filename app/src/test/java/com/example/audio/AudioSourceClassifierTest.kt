@@ -11,6 +11,8 @@ class AudioSourceClassifierTest {
         assertEquals(AudioChannelGroup.BEIN_SPORTS, AudioSourceClassifier.classify("بي ان سبورت 1"))
         assertEquals(AudioChannelGroup.OTHER, AudioSourceClassifier.classify("Sports 1", "Sports"))
         assertEquals(AudioChannelGroup.OTHER, AudioSourceClassifier.classify("Cinema Beinspired"))
+        assertEquals(AudioChannelGroup.OTHER, AudioSourceClassifier.classify("beIN SPORTS Documentary", "Movies"))
+        assertEquals(AudioChannelGroup.OTHER, AudioSourceClassifier.classify("ALWAN Series", "مسلسلات"))
     }
 
     @Test
