@@ -668,15 +668,14 @@ class XtreamBridge(context: Context) {
 }
 
 /**
- * Encrypted credential vault backed by Android Keystore AES-GCM,
- * with resilient fallback encryption for cheap Android TV boxes where
- * hardware AndroidKeyStore is unstable or unsupported.
+ * Encrypted credential vault backed by Android Keystore AES-GCM.
+ * Legacy device-derived ECB records are accepted only for one-time migration.
  */
 internal class CredentialVault(
     private val context: Context,
     private val keyProvider: (() -> SecretKey)? = null
 ) {
-    private fun encryptionKey(): SecretKey = keyProvider?.invoke() ?: encryptionKey()
+    private fun encryptionKey(): SecretKey = keyProvider?.invoke() ?: getOrCreateKey()
     private val preferences = context.getSharedPreferences("sonix_secure_account", Context.MODE_PRIVATE)
 
     fun save(server: String, username: String, password: String) {
