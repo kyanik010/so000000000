@@ -100,7 +100,10 @@ class AudioAddonManager(
                     )
                 }
             }
-        } catch (_: Exception) {}
+        } catch (error: Exception) {
+            // Do not silently hide malformed provider payloads; log only the exception type.
+            AudioLog.w("SONIXAudioAddon", "Provider channel parsing failed: ${error.javaClass.simpleName}")
+        }
 
         discoveredChannels.clear()
         discoveredChannels.addAll(list)
