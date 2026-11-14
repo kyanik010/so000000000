@@ -2133,10 +2133,29 @@
       border: 1px solid var(--border-panel);
       border-radius: 10px;
       background: var(--bg-screen);
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
+      gap: 8px;
+      padding: 6px;
+    }
+    .audio-source-group {
+      min-width: 0;
       display: flex;
       flex-direction: column;
-      gap: 2px;
-      padding: 4px;
+      gap: 3px;
+    }
+    .audio-source-group-title {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 7px 8px;
+      border-radius: 6px;
+      background: var(--bg-panel, var(--bg-screen));
+      color: var(--accent-gold);
+      font-weight: 800;
+      font-size: 0.8rem;
+      text-align: center;
     }
     .audio-picker-item {
       padding: 8px 12px;
@@ -2225,6 +2244,9 @@
       color: var(--accent-gold);
     }
     @media (max-width: 600px) {
+      #modal-ext-audio .audio-channel-picker {
+        grid-template-columns: minmax(0, 1fr);
+      }
       #modal-ext-audio {
         padding: 8px;
       }
