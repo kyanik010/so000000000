@@ -3390,6 +3390,8 @@
       refreshSavedPlaylists();
       refreshLoginDeviceCode();
       try {
+        const savedLists = parseNative(window.XtreamBridge.savedPlaylists()).playlists || [];
+        if (savedLists.length > 1) throw new Error('اختر قائمة التشغيل');
         const saved = parseNative(window.XtreamBridge.savedCredentials());
         document.getElementById('login-server').value = saved.server || '';
         document.getElementById('login-username').value = saved.username || '';
