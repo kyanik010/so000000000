@@ -25,6 +25,7 @@ class SonixControlClient(context: Context) {
 
     @Volatile var onSync: ((JSONObject) -> Unit)? = null
     @Volatile var onAudioSourcesSync: ((JSONObject) -> Unit)? = null
+    @Volatile var onUpdateCheck: ((JSONObject) -> Unit)? = null
     private val audioM3uCatalog by lazy { com.example.audio.AudioM3uCatalog(app) }
 
     fun sync() {
@@ -38,11 +39,39 @@ class SonixControlClient(context: Context) {
                     .put("manufacturer", Build.MANUFACTURER ?: "")
                     .put("model", Build.MODEL ?: "")
                     .put("os_version", Build.VERSION.RELEASE ?: "")
-                    .put("app_version", app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: ""))
+                    .put("app_version", app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "")
+                    .put("app_version_code", currentVersionCode())
+                    .put("app_abi", Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"))
                 onSync?.invoke(result)
+                checkForAppUpdate()
             } catch (e: Exception) {
                 android.util.Log.w("SONIXControl", "Control sync failed", e)
             }
+        }
+    }
+
+    private fun currentVersionCode(): Long {
+        val info = app.packageManager.getPackageInfo(app.packageName, 0)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
+    }
+
+    private fun checkForAppUpdate() {
+        try {
+            val result = request(JSONObject()
+                .put("action", "app.update.check")
+                .put("device_uid", deviceUid)
+                .put("device_name", Build.MODEL ?: "Android")
+                .put("platform", if (app.packageManager.hasSystemFeature("android.software.leanback")) "android_tv" else "android")
+                .put("manufacturer", Build.MANUFACTURER ?: "")
+                .put("model", Build.MODEL ?: "")
+                .put("os_version", Build.VERSION.RELEASE ?: "")
+                .put("app_version", app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "")
+                .put("app_version_code", currentVersionCode())
+                .put("app_abi", Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown")
+                .put("channel", "stable"))
+            if (result.optString("status") == "active") onUpdateCheck?.invoke(result)
+        } catch (error: Exception) {
+            android.util.Log.w("SONIXUpdate", "Update check failed; normal app startup continues", error)
         }
     }
 
